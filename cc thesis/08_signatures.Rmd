@@ -1,0 +1,962 @@
+---
+title: "signatures"
+author: "chiara caprioli"
+date: "24/08/2022"
+output: html_document
+---
+
+```{r, message=FALSE}
+library(tidyverse)
+library(Seurat)
+library(msigdbr)
+library(Hmisc)
+library(corrplot)
+```
+
+```{r}
+colors <- list()
+
+colors$sample <- setNames(
+  c("#227093", "#ffb142", "#485460"),
+  c("AML4", "AML5", "sAML1")
+)
+
+colors$cell_cycle <- setNames(
+  c("#45aaf2", "#f1c40f", "#e74c3c"),
+  c("G1", "S", "G2M")
+)
+
+colors$cell_type <- setNames(
+  colors$cell_type <- c(
+  "#FEA47F","#25CCF7","#EAB543","#55E6C1","#CAD3C8",
+  "#F97F51","#1B9CFC","#F8EFBA","#58B19F","#2C3A47",
+  "#B33771","#3B3B98","#FD7272","#9AECDB","#D6A2E8",
+  "#6D214F","#182C61","#FC427B","#BDC581","#82589F",
+  "#EE5A24","#009432", "#F79F1F", "#A3CB38", "#1289A7",
+  "#D980FA", "#B53471"), 
+c("HSC", "LMPP", "GMP", "Prog_RBC", "Prog_Mk", "Prog_DC", "pDC", "cDC2", "CD14 Mono", "CD16 Mono", "CD4 Naive", "CD4 Memory" , "CD8 Naive",  "CD8 Effector_1", "CD8 Effector_2", "CD8 Memory_1", "Treg", "MAIT", "gdT",  "NK", "CD56 bright NK", "CD8 Memory_2", "Prog_B 1", "Prog_B 2", "Naive B", "Memory B", "Plasmablast"))
+
+colors$aggregated_lineage <- setNames(
+  c('#D69C4EFF','#C93312FF', '#174D79FF', '#CADDE1FF'),
+  c('HSC_progenitors', 'myeloid', 'T_NK', 'B')
+)
+
+BWR <- colorRampPalette(c("#053061", "#2166AC","#4393C3", "#92C5DE", 
+                           "#D1E5F0", "#FFFFFF", "#FDDBC7", "#F4A582", 
+                           "#D6604D", "#B2182B","#67001F"))
+```
+
+```{r}
+AML4 <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4.rds")
+AML5 <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5.rds")
+sAML1 <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1.rds")
+AML.combined.sct <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML.combined.sct.rds")
+```
+
+### Other signatures
+
+We want to explore various biological themes:
+
+*Cell cycle control
+*Proliferation
+*Inflammation
+*Stress
+*Metabolism
+*Splicing
+*Oncogenic pathways
+
+We do that separately for lineage groups, only for cell with known genotype.
+```{r}
+AML4_HSC_myeloid <- AML4[,which(AML4$aggregated_lineage %in% c('HSC_progenitors', 'myeloid') & AML4$genotype != 'unknown')]
+AML4_immune <- AML4[,which(AML4$aggregated_lineage %in% c('T_NK', 'B') & AML4$genotype != 'unknown')]
+saveRDS(AML4_HSC_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_HSC_myeloid.rds")
+saveRDS(AML4_immune, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_immune.rds")
+
+AML5_HSC_myeloid <- AML5[,which(AML5$aggregated_lineage %in% c('HSC_progenitors', 'myeloid') & AML5$genotype != 'unknown')]
+AML5_immune <- AML5[,which(AML5$aggregated_lineage %in% c('T_NK', 'B') & AML5$genotype != 'unknown')]
+saveRDS(AML5_HSC_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_HSC_myeloid.rds")
+saveRDS(AML5_immune, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_immune.rds")
+
+sAML1_HSC_myeloid <- sAML1[,which(sAML1$aggregated_lineage %in% c('HSC_progenitors', 'myeloid') & sAML1$genotype != 'unknown')]
+sAML1_immune <- sAML1[,which(sAML1$aggregated_lineage %in% c('T_NK', 'B') & sAML1$genotype != 'unknown')]
+saveRDS(sAML1_HSC_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_HSC_myeloid.rds")
+saveRDS(sAML1_immune, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_immune.rds")
+```
+
+#### define lists of signatures by biological theme
+```{r}
+############# LSC17 (Ng et al, Nature 2016)
+
+LSC17 <- c('CD34', 'LAPTM4B', 'ARHGAP22', 'SMIM24', 'KIAA0125', 
+           'MMRN1', 'DNMT3B', 'SOCS2', 'CDK6', 'NGFRAP1', 'CPXM1', 
+           'ZBTB46', 'DPYSL3', 'NYNRIN', 'ADGRG1', 'AKR1C3', 'EMP1')
+
+LSC17 <- list(LSC17)
+names(LSC17) <- 'LSC17'
+
+############# Cell cycle control
+HALLMARK_APOPTOSIS <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_APOPTOSIS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_DNA_REPAIR <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_DNA_REPAIR') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_E2F_TARGETS <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_E2F_TARGETS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_G2M_CHECKPOINT <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_G2M_CHECKPOINT') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_P53_PATHWAY <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_P53_PATHWAY') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_POSITIVE_REGULATION_OF_RESPONSE_TO_DNA_DAMAGE_STIMULUS <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_POSITIVE_REGULATION_OF_RESPONSE_TO_DNA_DAMAGE_STIMULUS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+cell_cycle_control <- list(HALLMARK_APOPTOSIS, HALLMARK_DNA_REPAIR, 
+                           HALLMARK_E2F_TARGETS, HALLMARK_G2M_CHECKPOINT,
+                           HALLMARK_P53_PATHWAY, GOBP_POSITIVE_REGULATION_OF_RESPONSE_TO_DNA_DAMAGE_STIMULUS)
+
+names(cell_cycle_control) <- c('HALLMARK_APOPTOSIS', 'HALLMARK_DNA_REPAIR', 
+                           'HALLMARK_E2F_TARGETS', 'HALLMARK_G2M_CHECKPOINT',
+                           'HALLMARK_P53_PATHWAY', 'GOBP_POSITIVE_REGULATION_OF_RESPONSE_TO_DNA_DAMAGE_STIMULUS')
+
+
+############# Proliferation
+GOBP_MITOTIC_NUCLEAR_DIVISION <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_MITOTIC_NUCLEAR_DIVISION') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_MITOTIC_SPINDLE <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_MITOTIC_SPINDLE') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+proliferation <- list(GOBP_MITOTIC_NUCLEAR_DIVISION, HALLMARK_MITOTIC_SPINDLE)
+
+names(proliferation) <- c('GOBP_MITOTIC_NUCLEAR_DIVISION', 'HALLMARK_MITOTIC_SPINDLE')
+
+############# Stress
+HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_UNFOLDED_PROTEIN_RESPONSE <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_UNFOLDED_PROTEIN_RESPONSE') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_CELLULAR_RESPONSE_TO_DSRNA <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_CELLULAR_RESPONSE_TO_DSRNA') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_RESPONSE_TO_OXIDATIVE_STRESS <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_RESPONSE_TO_OXIDATIVE_STRESS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_POSITIVE_REGULATION_OF_AUTOPHAGY <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_POSITIVE_REGULATION_OF_AUTOPHAGY') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GO_POSITIVE_REGULATION_OF_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GO_POSITIVE_REGULATION_OF_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_INTEGRATED_STRESS_RESPONSE_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_INTEGRATED_STRESS_RESPONSE_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS <- msigdbr(species = 'Homo sapiens', category = 'C2') %>%
+  filter(gs_name == 'REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+stress <- list(HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY, HALLMARK_UNFOLDED_PROTEIN_RESPONSE,
+               GOBP_CELLULAR_RESPONSE_TO_DSRNA, GOBP_RESPONSE_TO_OXIDATIVE_STRESS,
+               GOBP_POSITIVE_REGULATION_OF_AUTOPHAGY, 
+               GOBP_INTEGRATED_STRESS_RESPONSE_SIGNALING, REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS)
+
+names(stress) <- c('HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY', 'HALLMARK_UNFOLDED_PROTEIN_RESPONSE',
+               'GOBP_CELLULAR_RESPONSE_TO_DSRNA', 'GOBP_RESPONSE_TO_OXIDATIVE_STRESS',
+               'GOBP_POSITIVE_REGULATION_OF_AUTOPHAGY', 
+               'GOBP_INTEGRATED_STRESS_RESPONSE_SIGNALING', 'REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS')
+
+############# Metabolism
+HALLMARK_GLYCOLYSIS <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_GLYCOLYSIS') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_HYPOXIA <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_HYPOXIA') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_OXIDATIVE_PHOSPHORYLATION <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_OXIDATIVE_PHOSPHORYLATION') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+metabolism <- list(HALLMARK_GLYCOLYSIS, HALLMARK_HYPOXIA, HALLMARK_OXIDATIVE_PHOSPHORYLATION)
+names(metabolism) <- c('HALLMARK_GLYCOLYSIS', 'HALLMARK_HYPOXIA', 'HALLMARK_OXIDATIVE_PHOSPHORYLATION')
+
+############# Inflammation
+HALLMARK_INFLAMMATORY_RESPONSE <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_INFLAMMATORY_RESPONSE') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_INTERFERON_ALPHA_RESPONSE <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_INTERFERON_ALPHA_RESPONSE') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_INTERFERON_GAMMA_RESPONSE <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_INTERFERON_GAMMA_RESPONSE') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_IL2_STAT5_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_IL2_STAT5_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_IL6_JAK_STAT3_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_IL6_JAK_STAT3_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_TGF_BETA_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_TGF_BETA_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_TNFA_SIGNALING_VIA_NFKB <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_TNFA_SIGNALING_VIA_NFKB') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_RESPONSE_TO_TUMOR_NECROSIS_FACTOR <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_RESPONSE_TO_TUMOR_NECROSIS_FACTOR') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+inflammation_immunity <- list(HALLMARK_INFLAMMATORY_RESPONSE, HALLMARK_INTERFERON_ALPHA_RESPONSE,
+                              HALLMARK_INTERFERON_GAMMA_RESPONSE, HALLMARK_IL2_STAT5_SIGNALING,
+                              HALLMARK_IL6_JAK_STAT3_SIGNALING, HALLMARK_TGF_BETA_SIGNALING,
+                              HALLMARK_TNFA_SIGNALING_VIA_NFKB, GOBP_RESPONSE_TO_TUMOR_NECROSIS_FACTOR)
+
+names(inflammation_immunity) <- c('HALLMARK_INFLAMMATORY_RESPONSE', 'HALLMARK_INTERFERON_ALPHA_RESPONSE',
+                              'HALLMARK_INTERFERON_GAMMA_RESPONSE', 'HALLMARK_IL2_STAT5_SIGNALING',
+                              'HALLMARK_IL6_JAK_STAT3_SIGNALING', 'HALLMARK_TGF_BETA_SIGNALING',
+                              'HALLMARK_TNFA_SIGNALING_VIA_NFKB', 'GOBP_RESPONSE_TO_TUMOR_NECROSIS_FACTOR')
+
+
+############# Splicing
+GOBP_RNA_SPLICING <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_RNA_SPLICING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_REGULATION_OF_RNA_SPLICING <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_REGULATION_OF_RNA_SPLICING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_POSITIVE_REGULATION_OF_RNA_SPLICING <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_POSITIVE_REGULATION_OF_RNA_SPLICING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_NEGATIVE_REGULATION_OF_RNA_SPLICING <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_NEGATIVE_REGULATION_OF_RNA_SPLICING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_MRNA_CIS_SPLICING_VIA_SPLICEOSOME <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_MRNA_CIS_SPLICING_VIA_SPLICEOSOME') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_REGULATION_OF_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_REGULATION_OF_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_POSITIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_POSITIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_NEGATIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_NEGATIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_SPLICEOSOMAL_COMPLEX_ASSEMBLY <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_SPLICEOSOMAL_COMPLEX_ASSEMBLY') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+GOBP_SPLICEOSOMAL_CONFORMATIONAL_CHANGES_TO_GENERATE_CATALYTIC_CONFORMATION <- msigdbr(species = 'Homo sapiens', category = 'C5') %>%
+  filter(gs_name == 'GOBP_SPLICEOSOMAL_CONFORMATIONAL_CHANGES_TO_GENERATE_CATALYTIC_CONFORMATION') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+splicing <- list(GOBP_RNA_SPLICING, GOBP_REGULATION_OF_RNA_SPLICING, GOBP_POSITIVE_REGULATION_OF_RNA_SPLICING,
+                 GOBP_NEGATIVE_REGULATION_OF_RNA_SPLICING, GOBP_MRNA_CIS_SPLICING_VIA_SPLICEOSOME,
+                 GOBP_REGULATION_OF_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME, GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME,
+                 GOBP_POSITIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME, GOBP_NEGATIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME,
+                 GOBP_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME, GOBP_SPLICEOSOMAL_COMPLEX_ASSEMBLY,
+                 GOBP_SPLICEOSOMAL_CONFORMATIONAL_CHANGES_TO_GENERATE_CATALYTIC_CONFORMATION)
+
+names(splicing) <- c('GOBP_RNA_SPLICING', 'GOBP_REGULATION_OF_RNA_SPLICING', 'GOBP_POSITIVE_REGULATION_OF_RNA_SPLICING',
+                 'GOBP_NEGATIVE_REGULATION_OF_RNA_SPLICING', 'GOBP_MRNA_CIS_SPLICING_VIA_SPLICEOSOME',
+                 'GOBP_REGULATION_OF_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME', 'GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME',
+                 'GOBP_POSITIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME', 'GOBP_NEGATIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME',
+                 'GOBP_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME', 'GOBP_SPLICEOSOMAL_COMPLEX_ASSEMBLY',
+                 'GOBP_SPLICEOSOMAL_CONFORMATIONAL_CHANGES_TO_GENERATE_CATALYTIC_CONFORMATION')
+
+############# Oncogenic pathways
+HALLMARK_HEDGEHOG_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_HEDGEHOG_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_KRAS_SIGNALING_DN <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_KRAS_SIGNALING_DN') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_KRAS_SIGNALING_UP <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_KRAS_SIGNALING_UP') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_MTORC1_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_MTORC1_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_MYC_TARGETS_V2 <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_MYC_TARGETS_V2') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_NOTCH_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_NOTCH_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_PI3K_AKT_MTOR_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_PI3K_AKT_MTOR_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+HALLMARK_WNT_BETA_CATENIN_SIGNALING <- msigdbr(species = 'Homo sapiens', category = 'H') %>%
+  filter(gs_name == 'HALLMARK_WNT_BETA_CATENIN_SIGNALING') %>%
+  pull(gene_symbol) %>%
+  unique()
+
+oncogenic_pathways <- list(HALLMARK_HEDGEHOG_SIGNALING, HALLMARK_KRAS_SIGNALING_DN,
+                           HALLMARK_KRAS_SIGNALING_UP, HALLMARK_MTORC1_SIGNALING,
+                           HALLMARK_MYC_TARGETS_V2, HALLMARK_NOTCH_SIGNALING,
+                           HALLMARK_PI3K_AKT_MTOR_SIGNALING, HALLMARK_WNT_BETA_CATENIN_SIGNALING)
+
+names(oncogenic_pathways) <- c('HALLMARK_HEDGEHOG_SIGNALING', 'HALLMARK_KRAS_SIGNALING_DN',
+                           'HALLMARK_KRAS_SIGNALING_UP', 'HALLMARK_MTORC1_SIGNALING',
+                           'HALLMARK_MYC_TARGETS_V2', 'HALLMARK_NOTCH_SIGNALING',
+                           'HALLMARK_PI3K_AKT_MTOR_SIGNALING', 'HALLMARK_WNT_BETA_CATENIN_SIGNALING')
+
+signatures <- list(LSC17,
+                   cell_cycle_control,
+                   proliferation,
+                   stress, 
+                   metabolism,
+                   inflammation_immunity,
+                   splicing,
+                   oncogenic_pathways)
+
+names(signatures) <- c('LSC17',
+                   'cell_cycle_control',
+                   'proliferation',
+                   'stress', 
+                   'metabolism',
+                   'inflammation_immunity',
+                   'splicing',
+                   'oncogenic_pathways')
+
+saveRDS(signatures, '/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/signatures.rds')
+```
+
+```{r}
+names(signatures)
+```
+
+```{r}
+AML4_HSC_myeloid <- AddModuleScore(
+  AML4_HSC_myeloid,
+  features = signatures$oncogenic_pathways,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$oncogenic_pathways),
+  seed = 1,
+  search = T
+)
+
+AML4_immune <- AddModuleScore(
+  AML4_immune,
+  features = signatures$oncogenic_pathways,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$oncogenic_pathways),
+  seed = 1,
+  search = T
+)
+
+saveRDS(AML4_HSC_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_HSC_myeloid.rds")
+saveRDS(AML4_immune, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_immune.rds")
+
+AML5_HSC_myeloid <- AddModuleScore(
+  AML5_HSC_myeloid,
+  features = signatures$oncogenic_pathways,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$oncogenic_pathways),
+  seed = 1,
+  search = T
+)
+
+AML5_immune <- AddModuleScore(
+  AML5_immune,
+  features = signatures$oncogenic_pathways,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$oncogenic_pathways),
+  seed = 1,
+  search = T
+)
+
+saveRDS(AML5_HSC_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_HSC_myeloid.rds")
+saveRDS(AML5_immune, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_immune.rds")
+
+sAML1_HSC_myeloid <- AddModuleScore(
+  sAML1_HSC_myeloid,
+  features = signatures$oncogenic_pathways,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$oncogenic_pathways),
+  seed = 1,
+  search = T
+)
+
+sAML1_immune <- AddModuleScore(
+  sAML1_immune,
+  features = signatures$oncogenic_pathways,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$oncogenic_pathways),
+  seed = 1,
+  search = T
+)
+
+saveRDS(sAML1_HSC_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_HSC_myeloid.rds")
+saveRDS(sAML1_immune, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_immune.rds")
+```
+
+```{r}
+FeaturePlot(sAML1_HSC_myeloid,
+            features = 'HALLMARK_MYC_TARGETS_V25',
+            keep.scale = NULL, 
+            order = TRUE, 
+            pt.size = 0.1,
+            combine = T) &
+  scale_colour_gradientn(
+    #limits = c(0,1),
+    n.breaks = 6,
+    colours = rev(RColorBrewer::brewer.pal(n = 11, name = "RdBu"))) &
+  theme_bw() &
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = 'bold', hjust = 0.5))
+```
+
+### Correlate module score with n mutations on distinct lineages
+```{r}
+AML4_HSC <- AML4[,which(AML4$aggregated_lineage == 'HSC_progenitors' & AML4$genotype != 'unknown')]
+AML5_HSC <- AML5[,which(AML5$aggregated_lineage == 'HSC_progenitors' & AML5$genotype != 'unknown')]
+sAML1_HSC <- sAML1[,which(sAML1$aggregated_lineage == 'HSC_progenitors' & sAML1$genotype != 'unknown')]
+
+saveRDS(AML4_HSC, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_HSC.rds")
+saveRDS(AML5_HSC, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_HSC.rds")
+saveRDS(sAML1_HSC, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_HSC.rds")
+
+AML4_myeloid <- AML4[,which(AML4$aggregated_lineage == 'myeloid' & AML4$genotype != 'unknown')]
+AML5_myeloid <- AML5[,which(AML5$aggregated_lineage == 'myeloid' & AML5$genotype != 'unknown')]
+sAML1_myeloid <- sAML1[,which(sAML1$aggregated_lineage == 'myeloid' & sAML1$genotype != 'unknown')]
+
+saveRDS(AML4_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_my.rds")
+saveRDS(AML5_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_my.rds")
+saveRDS(sAML1_myeloid, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_my.rds")
+
+AML4_T_NK <- AML4[,which(AML4$aggregated_lineage == 'T_NK' & AML4$genotype != 'unknown')]
+AML5_T_NK <- AML5[,which(AML5$aggregated_lineage == 'T_NK' & AML5$genotype != 'unknown')]
+sAML1_T_NK <- sAML1[,which(sAML1$aggregated_lineage == 'T_NK' & sAML1$genotype != 'unknown')]
+
+saveRDS(AML4_T_NK, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_T_NK.rds")
+saveRDS(AML5_T_NK, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_T_NK.rds")
+saveRDS(sAML1_T_NK, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_T_NK.rds")
+
+AML4_B <- AML4[,which(AML4$aggregated_lineage == 'B' & AML4$genotype != 'unknown')]
+AML5_B <- AML5[,which(AML5$aggregated_lineage == 'B' & AML5$genotype != 'unknown')]
+sAML1_B <- sAML1[,which(sAML1$aggregated_lineage == 'B' & sAML1$genotype != 'unknown')]
+
+saveRDS(AML4_B, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_B.rds")
+saveRDS(AML5_B, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_B.rds")
+saveRDS(sAML1_B, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_B.rds")
+```
+
+```{r}
+AML4_B <- AddModuleScore(
+  AML4_B,
+  features = signatures$LSC17,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$LSC17),
+  seed = 1,
+  search = T
+)
+
+saveRDS(AML4_B, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_B.rds")
+
+AML5_B <- AddModuleScore(
+  AML5_B,
+  features = signatures$LSC17,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$LSC17),
+  seed = 1,
+  search = T
+)
+
+saveRDS(AML5_B, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_B.rds")
+
+sAML1_B <- AddModuleScore(
+  sAML1_B,
+  features = signatures$LSC17,
+  pool = NULL,
+  nbin = 10,
+  ctrl = 200,
+  k = FALSE,
+  assay = 'SCT',
+  name = names(signatures$LSC17),
+  seed = 1,
+  search = T
+)
+
+saveRDS(sAML1_B, "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_B.rds")
+```
+
+```{r}
+AML4_HSC <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_HSC.rds")
+AML5_HSC <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_HSC.rds")
+sAML1_HSC <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_HSC.rds")
+
+AML4_myeloid <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_my.rds")
+AML5_myeloid <- readRDS('/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_my.rds')
+sAML1_myeloid <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_my.rds")
+
+AML4_T_NK <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_T_NK.rds")
+AML5_T_NK <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_T_NK.rds")
+sAML1_T_NK <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_T_NK.rds")
+
+AML4_B <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML4_B.rds")
+AML5_B <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML5_B.rds")
+sAML1_B <- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1_B.rds")
+```
+
+```{r}
+seurat <- sAML1_B
+
+df <- data.frame(
+  N_mutations = seurat$n_mut_pro,
+  #LSC17 = seurat$LSC171,
+  HALLMARK_APOPTOSIS = seurat$HALLMARK_APOPTOSIS1,
+  HALLMARK_DNA_REPAIR = seurat$HALLMARK_DNA_REPAIR2,
+  HALLMARK_E2F_TARGETS = seurat$HALLMARK_E2F_TARGETS3,
+  HALLMARK_G2M_CHECKPOINT = seurat$HALLMARK_G2M_CHECKPOINT4,
+  HALLMARK_P53_PATHWAY = seurat$HALLMARK_P53_PATHWAY5,
+  GOBP_POSITIVE_REGULATION_OF_RESPONSE_TO_DNA_DAMAGE_STIMULUS = seurat$GOBP_POSITIVE_REGULATION_OF_RESPONSE_TO_DNA_DAMAGE_STIMULUS6,
+  GOBP_MITOTIC_NUCLEAR_DIVISION = seurat$GOBP_MITOTIC_NUCLEAR_DIVISION1,
+  HALLMARK_MITOTIC_SPINDLE = seurat$HALLMARK_MITOTIC_SPINDLE2,
+  HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY = seurat$HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY1,
+  HALLMARK_UNFOLDED_PROTEIN_RESPONSE = seurat$HALLMARK_UNFOLDED_PROTEIN_RESPONSE2,
+  GOBP_CELLULAR_RESPONSE_TO_DSRNA = seurat$GOBP_CELLULAR_RESPONSE_TO_DSRNA3,
+  GOBP_RESPONSE_TO_OXIDATIVE_STRESS = seurat$GOBP_RESPONSE_TO_OXIDATIVE_STRESS4,
+  GOBP_POSITIVE_REGULATION_OF_AUTOPHAGY = seurat$GOBP_POSITIVE_REGULATION_OF_AUTOPHAGY5,
+  GOBP_INTEGRATED_STRESS_RESPONSE_SIGNALING = seurat$GOBP_INTEGRATED_STRESS_RESPONSE_SIGNALING6,
+  REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS = seurat$REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS7,
+  HALLMARK_GLYCOLYSIS = seurat$HALLMARK_GLYCOLYSIS1,
+  HALLMARK_HYPOXIA = seurat$HALLMARK_HYPOXIA2,
+  HALLMARK_OXIDATIVE_PHOSPHORYLATION = seurat$HALLMARK_OXIDATIVE_PHOSPHORYLATION3,
+  HALLMARK_INFLAMMATORY_RESPONSE = seurat$HALLMARK_INFLAMMATORY_RESPONSE1,
+  HALLMARK_INTERFERON_ALPHA_RESPONSE = seurat$HALLMARK_INTERFERON_ALPHA_RESPONSE2,
+  HALLMARK_INTERFERON_GAMMA_RESPONSE = seurat$HALLMARK_INTERFERON_GAMMA_RESPONSE3,
+  HALLMARK_IL2_STAT5_SIGNALING = seurat$HALLMARK_IL2_STAT5_SIGNALING4,
+  HALLMARK_IL6_JAK_STAT3_SIGNALING = seurat$HALLMARK_IL6_JAK_STAT3_SIGNALING5,
+  HALLMARK_TGF_BETA_SIGNALING = seurat$HALLMARK_TGF_BETA_SIGNALING6,
+  HALLMARK_TNFA_SIGNALING_VIA_NFKB = seurat$HALLMARK_TNFA_SIGNALING_VIA_NFKB7,
+  GOBP_RESPONSE_TO_TUMOR_NECROSIS_FACTOR = seurat$GOBP_RESPONSE_TO_TUMOR_NECROSIS_FACTOR8,
+  GOBP_RNA_SPLICING = seurat$GOBP_RNA_SPLICING1,
+  GOBP_REGULATION_OF_RNA_SPLICING = seurat$GOBP_REGULATION_OF_RNA_SPLICING2,
+  GOBP_POSITIVE_REGULATION_OF_RNA_SPLICING = seurat$GOBP_POSITIVE_REGULATION_OF_RNA_SPLICING3,
+  GOBP_NEGATIVE_REGULATION_OF_RNA_SPLICING = seurat$GOBP_NEGATIVE_REGULATION_OF_RNA_SPLICING4,
+  GOBP_MRNA_CIS_SPLICING_VIA_SPLICEOSOME = seurat$GOBP_MRNA_CIS_SPLICING_VIA_SPLICEOSOME5,
+  GOBP_REGULATION_OF_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME = seurat$GOBP_REGULATION_OF_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME6,
+  GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME = seurat$GOBP_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME7,
+  GOBP_POSITIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME = seurat$GOBP_POSITIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME8,
+  GOBP_NEGATIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME = seurat$GOBP_NEGATIVE_REGULATION_OF_MRNA_SPLICING_VIA_SPLICEOSOME9,
+  GOBP_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME = seurat$GOBP_ALTERNATIVE_MRNA_SPLICING_VIA_SPLICEOSOME10,
+  GOBP_SPLICEOSOMAL_COMPLEX_ASSEMBLY = seurat$GOBP_SPLICEOSOMAL_COMPLEX_ASSEMBLY11,
+  GOBP_SPLICEOSOMAL_CONFORMATIONAL_CHANGES_TO_GENERATE_CATALYTIC_CONFORMATION = seurat$GOBP_SPLICEOSOMAL_CONFORMATIONAL_CHANGES_TO_GENERATE_CATALYTIC_CONFORMATION12,
+  HALLMARK_HEDGEHOG_SIGNALING = seurat$HALLMARK_HEDGEHOG_SIGNALING1,
+  HALLMARK_KRAS_SIGNALING_DN = seurat$HALLMARK_KRAS_SIGNALING_DN2,
+  HALLMARK_KRAS_SIGNALING_UP = seurat$HALLMARK_KRAS_SIGNALING_UP3,
+  HALLMARK_MTORC1_SIGNALING = seurat$HALLMARK_MTORC1_SIGNALING4,
+  HALLMARK_MYC_TARGETS_V2 = seurat$HALLMARK_MYC_TARGETS_V25,
+  HALLMARK_NOTCH_SIGNALING = seurat$HALLMARK_NOTCH_SIGNALING6,
+  HALLMARK_PI3K_AKT_MTOR_SIGNALING = seurat$HALLMARK_PI3K_AKT_MTOR_SIGNALING7,
+  HALLMARK_WNT_BETA_CATENIN_SIGNALING = seurat$HALLMARK_WNT_BETA_CATENIN_SIGNALING8
+)
+
+df <- df %>%
+  mutate(N_mutations = (N_mutations - mean(N_mutations)) / stats::sd(N_mutations)) # scale n mutations by z score
+```
+
+```{r}
+#for (i in colnames(df)) {
+#  
+#  x = shapiro.test(df[[i]])
+#  print(x)
+#  
+#} # normal distribution: p >0.05
+```
+
+```{r}
+# correlation
+res_sAML1_B <- rcorr(as.matrix(df), type = 'spearman')
+
+res_sAML1_B$P[is.na(res_sAML1_B$P)] <- 1
+```
+
+```{r}
+r_AML4 <- res_AML4_HSC$r[,1] %>% as.data.frame() 
+p_AML4 <- res_AML4_HSC$P[,1] %>% as.data.frame() 
+AML4_HSC <- cbind(r_AML4, p_AML4)
+colnames(AML4_HSC) <- c('r', 'p')
+AML4_HSC <- AML4_HSC %>% mutate(sample = 'AML4_HSC')
+
+r_AML5 <- res_AML5_HSC$r[,1] %>% as.data.frame() 
+p_AML5 <- res_AML5_HSC$P[,1] %>% as.data.frame() 
+AML5_HSC <- cbind(r_AML5, p_AML5)
+colnames(AML5_HSC) <- c('r', 'p')
+AML5_HSC <- AML5_HSC %>% mutate(sample = 'AML5_HSC')
+
+r_sAML1 <- res_sAML1_HSC$r[,1] %>% as.data.frame() 
+p_sAML1 <- res_sAML1_HSC$P[,1] %>% as.data.frame() 
+sAML1_HSC <- cbind(r_sAML1, p_sAML1)
+colnames(sAML1_HSC) <- c('r', 'p')
+sAML1_HSC <- sAML1_HSC %>% mutate(sample = 'sAML1_HSC')
+```
+
+```{r}
+r_AML4 <- res_AML4_myeloid$r[,1] %>% as.data.frame() 
+p_AML4 <- res_AML4_myeloid$P[,1] %>% as.data.frame() 
+AML4_myeloid <- cbind(r_AML4, p_AML4)
+colnames(AML4_myeloid) <- c('r', 'p')
+AML4_myeloid <- AML4_myeloid %>% mutate(sample = 'AML4_myeloid')
+
+r_AML5 <- res_AML5_myeloid$r[,1] %>% as.data.frame() 
+p_AML5 <- res_AML5_myeloid$P[,1] %>% as.data.frame() 
+AML5_myeloid <- cbind(r_AML5, p_AML5)
+colnames(AML5_myeloid) <- c('r', 'p')
+AML5_myeloid <- AML5_myeloid %>% mutate(sample = 'AML5_myeloid')
+
+r_sAML1 <- res_sAML1_myeloid$r[,1] %>% as.data.frame() 
+p_sAML1 <- res_sAML1_myeloid$P[,1] %>% as.data.frame() 
+sAML1_myeloid <- cbind(r_sAML1, p_sAML1)
+colnames(sAML1_myeloid) <- c('r', 'p')
+sAML1_myeloid <- sAML1_myeloid %>% mutate(sample = 'sAML1_myeloid')
+```
+
+```{r}
+r_AML4 <- res_AML4_T_NK$r[,1] %>% as.data.frame() 
+p_AML4 <- res_AML4_T_NK$P[,1] %>% as.data.frame() 
+AML4_T_NK <- cbind(r_AML4, p_AML4)
+colnames(AML4_T_NK) <- c('r', 'p')
+AML4_T_NK <- AML4_T_NK %>% mutate(sample = 'AML4_T_NK')
+
+r_AML5 <- res_AML5_T_NK$r[,1] %>% as.data.frame() 
+p_AML5 <- res_AML5_T_NK$P[,1] %>% as.data.frame() 
+AML5_T_NK <- cbind(r_AML5, p_AML5)
+colnames(AML5_T_NK) <- c('r', 'p')
+AML5_T_NK <- AML5_T_NK %>% mutate(sample = 'AML5_T_NK')
+
+r_sAML1 <- res_sAML1_T_NK$r[,1] %>% as.data.frame() 
+p_sAML1 <- res_sAML1_T_NK$P[,1] %>% as.data.frame() 
+sAML1_T_NK <- cbind(r_sAML1, p_sAML1)
+colnames(sAML1_T_NK) <- c('r', 'p')
+sAML1_T_NK <- sAML1_T_NK %>% mutate(sample = 'sAML1_T_NK')
+```
+
+```{r}
+r_AML4 <- res_AML4_B$r[,1] %>% as.data.frame() 
+p_AML4 <- res_AML4_B$P[,1] %>% as.data.frame() 
+AML4_B <- cbind(r_AML4, p_AML4)
+colnames(AML4_B) <- c('r', 'p')
+AML4_B <- AML4_B %>% mutate(sample = 'AML4_B')
+
+r_AML5 <- res_AML5_B$r[,1] %>% as.data.frame() 
+p_AML5 <- res_AML5_B$P[,1] %>% as.data.frame() 
+AML5_B <- cbind(r_AML5, p_AML5)
+colnames(AML5_B) <- c('r', 'p')
+AML5_B <- AML5_B %>% mutate(sample = 'AML5_B')
+
+r_sAML1 <- res_sAML1_B$r[,1] %>% as.data.frame() 
+p_sAML1 <- res_sAML1_B$P[,1] %>% as.data.frame() 
+sAML1_B <- cbind(r_sAML1, p_sAML1)
+colnames(sAML1_B) <- c('r', 'p')
+sAML1_B <- sAML1_B %>% mutate(sample = 'sAML1_B')
+```
+
+```{r}
+r <- cbind(AML4_HSC$r, AML5_HSC$r, sAML1_HSC$r, 
+           AML4_myeloid$r, AML5_myeloid$r, sAML1_myeloid$r,
+           AML4_T_NK$r, AML5_T_NK$r, sAML1_T_NK$r,
+           AML4_B$r, AML5_B$r, sAML1_B$r) 
+
+colnames(r) <- c('AML4_HSC', 'AML5_HSC', 'sAML1_HSC', 
+                 'AML4_myeloid', 'AML5_myeloid', 'sAML1_myeloid',
+                 'AML4_T_NK', 'AML5_T_NK', 'sAML1_T_NK',
+                 'AML4_B', 'AML5_B', 'sAML1_B')
+rownames(r) <- colnames(df)
+
+p <- cbind(AML4_HSC$p, AML5_HSC$p, sAML1_HSC$p, 
+           AML4_myeloid$p, AML5_myeloid$p, sAML1_myeloid$p,
+           AML4_T_NK$p, AML5_T_NK$p, sAML1_T_NK$p,
+           AML4_B$p, AML5_B$p, sAML1_B$p) 
+
+colnames(p) <-c('AML4_HSC', 'AML5_HSC', 'sAML1_HSC', 
+                 'AML4_myeloid', 'AML5_myeloid', 'sAML1_myeloid',
+                 'AML4_T_NK', 'AML5_T_NK', 'sAML1_T_NK',
+                 'AML4_B', 'AML5_B', 'sAML1_B')
+
+rownames(p) <- colnames(df)
+
+all <- list(r,p)
+names(all) <- c('r', 'p')
+```
+
+```{r}
+pdf('/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/genotype_clones/plots/AML_lineage_corr_n_mut.pdf', height = 12, width = 16)
+
+corrplot(all$r[3:nrow(all$r),], is.corr = F, 
+         p.mat = all$p[3:nrow(all$p),], 
+         sig.level = 0.05, insig = "blank",
+         tl.cex = 1, tl.col = 'black',
+         tl.srt = 60, cl.length = 3,
+         cl.pos = 'r', cl.ratio = 0.3, cl.offset = 4,
+         cl.align.text = 'c')
+segments(
+  c(0.5,3.5,6.5,9.5,12.5), rep(0.5,5), 
+  c(0.5,3.5,6.5,9.5,12.5), rep(45.5,5), lwd=2)
+
+segments(x0 = c(0.5, 0.5), 
+         y0 = c(0.5, 45.5), 
+         x1 = c(12.5, 12.5), 
+         y1 = c(0.5, 45.5), 
+         lwd=2)
+
+dev.off()
+```
+
+# Single immune-related genes
+```{r}
+genes_tumor <- c('STAT1', 'CXCL10', 'IRF1', 'MX1', 
+                 'TAP1', 'TAP2', 'HLA-A', 'HLA-B', 'HLA-C', 
+                 'CD274', 'PDCD1', 'BTLA', 'CTLA4', 'HAVCR2', 'IDO1')
+
+genes_T_NK <- c('STAT1', 'CXCL10', 'IRF1', 'MX1', 
+           'CTSW', 'GNLY',  'CD8A', 'CD8B', 'PRF1', 'GZMA',  'GZMB', 'GZMH',  'CD3G',
+           'KLRB1', 'KLRD1', 'KLRK1', 'NKG7',
+           'CD244', 'EOMES', 'LAG3', 'PTGER4',
+           'TAP1', 'TAP2', 'HLA-A', 'HLA-B', 'HLA-C', 
+           'PDCD1', 'BTLA', 'CTLA4', 'HAVCR2')
+
+colors <- list()
+colors$n_mut <- setNames(
+  c("#F0F0F0", "#FFEDA0", "#FD8D3C", "#E31A1C", "#800026"),
+  c('0', '1', '2', '3', '>3')
+)
+```
+
+```{r}
+seurat <- sAML1
+seurat <- seurat[genes_T_NK[which(genes_T_NK %in% rownames(seurat))],which(seurat$aggregated_lineage == 'T_NK' & seurat$genotype != 'unknown')]
+
+DoHeatmap(seurat, features = genes_T_NK, group.by = 'n_mut_bin', group.colors = colors$n_mut, label = F, draw.lines = F) &
+  scale_color_manual(name = "N mutations per cell", values = colors$n_mut) &
+  scale_fill_gradientn(colours = rev(RColorBrewer::brewer.pal(n = 11, name = "RdBu"))) &
+  ggtitle('sAML1') &
+  theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2))
+
+ggsave('/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/genotype_clones/plots/immune_genes/heatmap_sAML1.png', width = 7, height = 5)
+```
+
+```{r}
+seurat <- sAML1
+seurat <- seurat[genes_tumor[which(genes_tumor %in% rownames(seurat))],which(seurat$aggregated_lineage == 'myeloid' & seurat$genotype != 'unknown')]
+
+DoHeatmap(seurat, features = genes_tumor, group.by = 'n_mut_bin', group.colors = colors$n_mut, label = F, draw.lines = F) &
+  scale_color_manual(name = "N mutations per cell", values = colors$n_mut) &
+  scale_fill_gradientn(colours = rev(RColorBrewer::brewer.pal(n = 11, name = "RdBu"))) &
+  ggtitle('AML4') &
+  theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2))
+```
+
+## HSPC marker genes 0/1 vs 3/>3 mutations
+```{r}
+seurat <- AML4[,which(AML4$aggregated_lineage == 'HSC_progenitors' & AML4$genotype != 'unknown')]
+DefaultAssay(seurat) <- 'RNA'
+seurat <- NormalizeData(seurat)
+table(seurat$n_mut_bin)
+Idents(seurat) <- seurat$n_mut_bin
+
+AML4.markers_cluster <- FindMarkers(
+  seurat,
+  assay = 'RNA',
+  slot = "data",
+  ident.1 = c('3', '>3'), 
+  ident.2 = c('0', '1'),
+  logfc.threshold = 0,
+  test.use = "wilcox",
+  min.pct = 0.1,
+  verbose = TRUE,
+  only.pos = T,
+  min.cells.group = 3
+)
+
+AML4.markers_cluster <- AML4.markers_cluster %>%
+  rownames_to_column(var = 'gene') 
+
+write_csv(AML4.markers_cluster, '/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/marker_AML4_HSPC_nMutBin_w_RNA.csv')
+```
+
+```{r}
+seurat <- AML5[,which(AML5$aggregated_lineage == 'HSC_progenitors' & AML5$genotype != 'unknown')]
+DefaultAssay(seurat) <- 'RNA'
+seurat <- NormalizeData(seurat)
+
+Idents(seurat) <- seurat$n_mut_bin
+
+AML5.markers_cluster <- FindMarkers(
+  seurat,
+  assay = 'RNA',
+  slot = "data",
+  ident.1 = c('3', '>3'), 
+  ident.2 = c('0', '1'),
+  logfc.threshold = 0,
+  test.use = "wilcox",
+  min.pct = 0.1,
+  verbose = TRUE,
+  only.pos = T,
+  min.cells.group = 3
+)
+
+AML5.markers_cluster <- AML5.markers_cluster %>%
+  rownames_to_column(var = 'gene') 
+write_csv(AML5.markers_cluster, '/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/marker_AML5_HSPC_nMutBin_w_RNA.csv')
+```
+
+```{r}
+seurat <- sAML1[,which(sAML1$aggregated_lineage == 'HSC_progenitors' & sAML1$genotype != 'unknown')]
+DefaultAssay(seurat) <- 'RNA'
+seurat <- NormalizeData(seurat)
+
+Idents(seurat) <- seurat$n_mut_bin
+
+sAML1.markers_cluster <- FindMarkers(
+  seurat,
+  assay = 'RNA',
+  slot = "data",
+  ident.1 = c('3', '>3'), 
+  ident.2 = c('0', '1'),
+  logfc.threshold = 0,
+  test.use = "wilcox",
+  min.pct = 0.1,
+  verbose = TRUE,
+  only.pos = T,
+  min.cells.group = 3
+)
+
+sAML1.markers_cluster <- sAML1.markers_cluster %>%
+  rownames_to_column(var = 'gene') 
+write_csv(sAML1.markers_cluster, '/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/marker_sAML1_HSPC_nMutBin_w_RNA.csv')
+```
+
+```{r}
+sessionInfo()
+```
+
