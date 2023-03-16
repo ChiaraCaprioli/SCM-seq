@@ -1,0 +1,328 @@
+---
+title: "Lineage mapping (Triana's reference)"
+author: "Chiara_Caprioli"
+date: "29/12/2022"
+output:
+  html_document:
+    code_folding: hide
+---
+
+After Sergio Triana & Lars Velten, https://git.embl.de/triana/nrn/-/tree/master/Projection_Vignette (06/05/2021)
+
+```{r, echo=F, message=F,warning=F}
+library(tidyverse)
+library(Seurat)
+library(reshape2)
+library(SingleCellExperiment)
+library(scmap)
+library(parallel)
+```
+
+```{r}
+# set paths
+path_main <- '/Users/ieo4874/Desktop/working/SCMseq/'
+path_data <- paste0(path_main, 'data/')
+path_results <- paste0(path_main, 'results_and_plots/lineage_map/')
+```
+
+```{r}
+# samples
+samples <- c('AML4', 'AML5', 'sAML1', 'AML2', 'AML3', 'sAML4')
+all <- c(samples, 'healthy BM')
+```
+
+```{r, warning=FALSE, message=FALSE}
+#set colors 
+colors <- list()
+
+colors$sample <- setNames(
+  c("#227093", "#ffb142", "#485460", '#F9791EFF', '#C0D8D8FF', '#009E73FF', '#F0F0F0'), 
+  all
+)
+
+colors$SRSF2_state <- setNames(
+  c("#FF9932FF", "#405D61FF", '#F0F0F0'),
+  c("SRSF2 mutated", "SRSF2 unmutated", 'healthy BM')
+)
+
+colors$cell_cycle <- setNames(
+  c("#45aaf2", "#f1c40f", "#e74c3c"),
+  c("G1", "S", "G2M")
+)
+
+colors$discrete <- c(
+  '#046C9AFF', '#D69C4EFF', '#899DA4FF', '#C93312FF', '#D8B70AFF',
+  '#02401BFF', '#A2A475FF', '#81A88DFF', '#972D15FF', '#CADDE1FF',
+  '#7B906FFF', '#174D79FF',  '#898989FF', '#D4CDB1FF', '#708090FF',
+  '#6CA9C3FF', '#3A3533FF', '#000E33FF', '#800000FF',  '#175E78FF')
+```
+
+## Load, tidy up and explore reference
+Seurat object of well-annotated reference of cell states encountered in blood and bone marrow. 
+Antibody counts are CLR normalized and the RNA counts were Log Normalized (query has to be the same way)
+```{r}
+#options(timeout = max(1000, getOption("timeout")))
+#Healthy <- readRDS(url("https://ndownloader.figshare.com/files/28408638")) #in case this link breaks, see #https://doi.org/10.6084/m9.figshare.13397651.v3
+
+#saveRDS(Healthy, paste0(path_data, 'Healthy.rds'))
+Healthy <- readRDS(paste0(path_data, 'Healthy.rds'))
+```
+
+```{r}
+HSC_progenitors <- c("HSCs & MPPs", "Lymphomyeloid prog")
+
+myeloid <- c("Erythro-myeloid progenitors", "Early erythroid progenitor", "Late erythroid progenitor", "Aberrant erythroid",
+             "Megakaryocyte progenitors", "Eosinophil-basophil-mast cell progenitors",
+             "Early promyelocytes", "Late promyelocytes", "Myelocytes", 
+             "Plasmacytoid dendritic cell progenitors", "Plasmacytoid dendritic cells", 
+             "Conventional dendritic cell 1", "Conventional dendritic cell 2",
+             "Classical Monocytes", "Non-classical monocytes", "Monocyte-like blasts")
+
+T_cells <- c("CD4+ naive T cells", "CD4+ memory T cells", 
+             "CD69+PD-1+ memory CD4+ T cells", "CD4+ cytotoxic T cells",
+             "CD8+ naive T cells", "CD8+ effector memory T cells", 
+             "CD8+ central memory T cells", "CD8+CD103+ tissue resident memory T cells", 
+             "GammaDelta T cells")
+
+NK_cells <- c("NK cell progenitors", "NK T cells", "CD56brightCD16- NK cells", "CD56dimCD16+ NK cells")
+
+B_cells <- c("Pre-pro-B cells", 
+             "Pro-B cells", 
+             "Small pre-B cell",
+             "Pre-B cells", 
+             "Immature B cells",
+             "Mature naive B cells", 
+             "Nonswitched memory B cells", 
+             "CD11c+ memory B cells", 
+             "Class switched memory B cells", 
+             "Plasma cells")
+
+other <- c("Mesenchymal cells_1", "Mesenchymal cells_2")
+
+Healthy$ct <- factor(Healthy$ct, levels = c(HSC_progenitors, myeloid, 
+                        T_cells, NK_cells, B_cells, other))
+```
+
+```{r}
+my_pal <- c(
+  paletteer::paletteer_d("nationalparkcolors::Denali"),
+  paletteer:: paletteer_d("nationalparkcolors::Badlands"),
+  paletteer::paletteer_d("nationalparkcolors::GreatBasin"), 
+  paletteer::paletteer_d("nationalparkcolors::Arches"), 
+  paletteer:: paletteer_d("nationalparkcolors::MtMckinley"),
+  paletteer:: paletteer_d("nationalparkcolors::CraterLake"),
+  paletteer:: paletteer_d("nationalparkcolors::ArcticGates"),
+  paletteer:: paletteer_d("nationalparkcolors::Yellowstone")
+)
+
+colors$lineage <- setNames(
+  my_pal,
+  levels(Healthy$ct)
+)
+```
+
+```{r}
+plot_list <- list()
+for (i in levels(Healthy$ct)) {
+  
+  p <- DimPlot(Healthy, reduction = 'MOFAUMAP', pt.size = 0.1,
+        cells.highlight = colnames(Healthy)[which(Healthy$ct == i)],
+        cols.highlight = colors$lineage[[i]]) +
+        theme_bw() +
+        ggtitle(i) +
+        theme(panel.grid = element_blank(),
+              legend.position = 'none') 
+  
+  plot_list[[i]] <- p
+  
+}
+
+ggsave(filename = paste0(path_results, 'plots/mofaumap_panel_ct.png'),
+       device = "png",
+       plot = gridExtra::marrangeGrob(plot_list, nrow = 6, ncol = 8, top = NULL),
+       width = 30, height = 18)
+```
+
+```{r}
+DimPlot(Healthy, reduction = "MOFAUMAP", 
+        group.by = 'ct', pt.size = 0.1, 
+        shuffle = T) +
+  theme_bw() +
+  scale_color_manual(values = colors$lineage) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank()) 
+
+ggsave(paste0(path_results, 'plots/triana_mofaumap.png'), width = 13, height = 5)
+```
+
+## Load query
+```{r}
+merged <- readRDS("~/Desktop/working/SCMseq/data/merged_seurat_logcounts.rds") #log normalized
+normalized_counts <- GetAssayData(merged, assay = "RNA", slot="data")
+counts <- GetAssayData(merged, assay = "RNA", slot="counts") 
+```
+
+## Mapping query data on reference data
+
+The projection only uses a set 462 genes that were selected in Triana's reference to maximize information about cell states in the bone marrow. 
+```{r subsetGenes}
+counts.projection <- normalized_counts[intersect(rownames(normalized_counts), rownames(Healthy)),]
+dim(counts.projection) #452 44554
+```
+
+Next we use the routines from the `scmap` package to identify the nearest neighbors between query data (`counts.projection`) and Triana's reference data (`Healthy`). This computation can take a while, several hours in the case of large datasets with 10,000s of cells.
+```{r scmap, message=F, warning=F}
+#set up query data
+sce_Culture <- SingleCellExperiment(assays = list(normcounts =  as.matrix(counts.projection)))
+logcounts(sce_Culture) <- normcounts(sce_Culture)
+rowData(sce_Culture)$feature_symbol <- rownames(sce_Culture)
+
+#set up reference data
+sce_All <- SingleCellExperiment(assays = list(
+  normcounts = as.matrix(Healthy@assays$RNA@data[rownames(counts.projection),])))
+logcounts(sce_All) <- normcounts(sce_All)
+rowData(sce_All)$feature_symbol <- rownames(sce_All) # use gene names as feature symbols
+sce_All <- sce_All[!duplicated(rownames(sce_All)), ] # remove features with duplicated names
+
+# set the features to be used for scmap projection
+sce_Culture <- setFeatures(sce_Culture,features = rownames(sce_Culture))
+sce_All <- setFeatures(sce_All,features =  rownames(sce_All))
+
+# create an index to enable fast approximate nearest neighbor search
+sce_Culture <- indexCell(sce_Culture)
+sce_All <- indexCell(sce_All)
+
+# for each cell in query dataset, search for the 5 nearest neighbors by cosine distance within a collection of reference datasets
+Culture_Map <- scmapCell(
+  projection = sce_Culture,
+  index_list = list(sce_All = metadata(sce_All)$scmap_cell_index),
+  w = 5)
+
+saveRDS(Culture_Map, paste0(path_data, 'Culture_Map.rds'))
+```
+
+We use the nearest neighbor information to:
+*compute the embedding of query cells in the reference umap
+*compute the pseudotime of query cells projected in the reference umap
+*identify the most similar cell type 
+*compute a score that determines how similar each query cell is to the reference
+```{r project}
+# v1 (original, no pseudotime)
+Calc<-function(id,cult){
+  u <- cult[,id]
+  xcoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,1][u]
+  ycoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,2][u]
+  x=mean(xcoords)
+  y=mean(ycoords)
+  ct.t=table(Idents(Healthy)[u])
+  ct.t<- ct.t[order(ct.t,decreasing = T)]
+  nearest <- Healthy@assays$RNA@data[rownames(sce_Culture),u]
+  query <- normcounts(sce_Culture)[,id]
+  cornn<- apply(nearest,2,function(x) cor(x, query))
+  data.frame(row.names = id, x = x, y =y, ct = names(ct.t)[1], score = mean(cornn))
+  
+}
+
+mapped <- mclapply(colnames(Culture_Map$sce_All[[1]]), Calc, cult = Culture_Map$sce_All[[1]], mc.cores = 6)
+mapped <- do.call(rbind,mapped)
+
+saveRDS(mapped, paste0(path_data, 'mapped.rds'))
+```
+
+```{r}
+# v2 (with pseudotime)
+Calc<-function(id,cult){
+  u <- cult[,id]
+  lineage_pseudotime <- c('Myelocytes', 'cDC', 'Megakaryocte', 'Erythroid', 'B.cells')
+  pt_nn <- Healthy@meta.data[u,lineage_pseudotime]
+  pt = apply(pt_nn, 2, mean)
+  xcoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,1][u]
+  ycoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,2][u]
+  x=mean(xcoords)
+  y=mean(ycoords)
+  ct.t=table(Idents(Healthy)[u])
+  ct.t<- ct.t[order(ct.t,decreasing = T)]
+  nearest <- Healthy@assays$RNA@data[rownames(sce_Culture),u]
+  query <- normcounts(sce_Culture)[,id]
+  cornn<- apply(nearest,2,function(x) cor(x, query))
+  pt <- data.frame(row.names = id, x = x, y = y, ct = names(ct.t)[1], score = mean(cornn), pt = t(pt))
+  
+}
+
+mapped <- mclapply(colnames(Culture_Map$sce_All[[1]]), Calc, cult = Culture_Map$sce_All[[1]], mc.cores = 6)
+mapped <- do.call(rbind,mapped)
+
+saveRDS(mapped, paste0(path_data, 'mapped_pt.rds'))
+```
+
+```{r project}
+Idents(merged) <- mapped$ct
+mapped$sample <- merged$sample
+identical(rownames(mapped), rownames(merged@meta.data)) #TRUE
+merged$lineage <- mapped$ct
+merged$score <- mapped$score
+merged$pt.Myelocytes <- mapped$pt.Myelocytes
+merged$pt.cDC <- mapped$pt.cDC
+merged$pt.Megakaryocte <- mapped$pt.Megakaryocte
+merged$pt.Erythroid <- mapped$pt.Erythroid
+merged$pt.B.cells <- mapped$pt.B.cells
+
+saveRDS(merged, paste0(path_data, 'merged_mapped_log.rds'))
+```
+
+## Pseudotime projection
+Reference trajectories have been calculated on MOFAUMAP embeddings, by slingshot (see Triana et al).
+*Start = HSC
+*End = myelocytes, class switched memory B, late erythroid progenitors, megakaryocytes progenitors, conventional dendritic cells
+```{r}
+# plot reference trajectories
+lineage_pseudotime <- c('Myelocytes', 'cDC', 'Megakaryocte', 'Erythroid', 'B.cells')
+
+plot_list <- list()
+for (i in lineage_pseudotime) {
+  p <- FeaturePlot(Healthy, reduction = 'MOFAUMAP', 
+            features = i) +
+  theme_bw() +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme(panel.grid = element_blank()) 
+  
+  plot_list[[i]] <- p
+}
+
+ggsave(filename = paste0(path_results, 'plots/mofaumap_pt_lineage.png'),
+       device = "png",
+       plot = gridExtra::marrangeGrob(plot_list, nrow = 1, ncol = 5, top = NULL, right = NULL),
+       width = 17, height = 2.5)
+```
+
+```{r}
+lineage_pseudotime <- paste0('pt.', c('Myelocytes', 'cDC', 'Megakaryocte', 'Erythroid', 'B.cells'))
+
+for (i in lineage_pseudotime) {
+  x <- merged_mapped_log@meta.data %>% select(i, sample)
+  x <- x[!is.nan(x[[i]]),]
+  x[[i]] <- x[[i]]/max(x[[i]])
+  
+  p = ggplot(x, aes(x[[1]])) +
+    geom_density(fill = 'lightgrey') +
+    ggtitle(unlist(strsplit(i, 'pt.'))[2]) +
+    xlab('Pseudotime') +
+    ylab('Density') +
+    ylim(0,30) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2, size = 18),
+          strip.text = element_text(face = 'bold', size = 15),
+          axis.text = element_text(color = 'black', size = 12),
+          axis.title = element_text(color = 'black', size = 15)) +
+    facet_wrap(~sample, ncol = 1)
+  
+  ggsave(paste0(path_results, 'plots/sample_pt_', i, '.png'), p,
+         width = 3, height = 10)
+}
+```
+
+```{r}
+sessionInfo()
+```
+
