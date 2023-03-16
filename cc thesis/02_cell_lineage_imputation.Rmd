@@ -1,0 +1,378 @@
+---
+title: "AML4 - cell lineage imputation based on healthy BM reference"
+author: "chiara caprioli"
+date: "02/03/2022"
+output: html_document
+---
+
+### Set up environment
+```{r}
+library(Seurat)
+library(SeuratData)
+library(bmcite.SeuratData)
+library(tidyverse)
+```
+
+```{r, setup, include=FALSE}
+# set working directory
+knitr::opts_knit$set(root.dir = '/hpcnfs/scratch/PGP/ccaprioli/working/SRSF2_3_AMLs')
+```
+
+```{r}
+colors <- list()
+
+colors$sample <- setNames(
+  c("#227093", "#ffb142", "#485460"),
+  c("AML4", "AML5", "sAML1")
+)
+
+colors$cell_cycle <- setNames(
+  c("#45aaf2", "#f1c40f", "#e74c3c", "#7f8c8d"),
+  c("G1", "S", "G2M", "-")
+)
+
+colors$cell_type <- setNames(
+  colors$cell_type <- c(
+  "#FEA47F","#25CCF7","#EAB543","#55E6C1","#CAD3C8",
+  "#F97F51","#1B9CFC","#F8EFBA","#58B19F","#2C3A47",
+  "#B33771","#3B3B98","#FD7272","#9AECDB","#D6A2E8",
+  "#6D214F","#182C61","#FC427B","#BDC581","#82589F",
+  "#EE5A24","#009432", "#F79F1F", "#A3CB38", "#1289A7",
+  "#D980FA", "#B53471"), 
+c("HSC", "LMPP", "GMP", "Prog_RBC", "Prog_Mk", "Prog_DC", "pDC", "cDC2", "CD14 Mono", "CD16 Mono", "CD4 Naive", "CD4 Memory" , "CD8 Naive",  "CD8 Effector_1", "CD8 Effector_2", "CD8 Memory_1", "Treg", "MAIT", "gdT",  "NK", "CD56 bright NK", "CD8 Memory_2", "Prog_B 1", "Prog_B 2", "Naive B", "Memory B", "Plasmablast"))
+```
+
+Seurat 4.0.0 - Multimodal reference mapping, example 2 (vignettes/multimodal_reference_mapping.Rmd), February 08, 2021
+Reference: bmcite.SeuratData. 30,672 bone marrow cells generated using CITE-seq. Derived from GEO: GSE128639 (Stuart T, Butler A, et al. Comprehensive Integration of Single-Cell Data. Cell. 2019;177:1888-1902 https://doi.org/10.1016/j.cell.2019.05.031)
+
+```{r}
+#load reference data (normalized using log-normalization via NormalizeData())
+
+data("bmcite")
+DefaultAssay(object = bmcite) <- "RNA"
+```
+
+```{r}
+#The reference dataset contains a WNN graph, reflecting a weighted combination of the RNA and protein data in this CITE-seq experiment.
+#Compute a UMAP visualization based on this graph. 
+#Set return.model = TRUE , which will enable us to project query datasets onto this visualization.
+
+bm <- bmcite
+
+bm <- RunUMAP(bm, nn.name = "weighted.nn", reduction.name = "wnn.umap",
+              reduction.key = "wnnUMAP_", return.model = TRUE)
+```
+
+```{r}
+#Compute a supervised PCA (sPCA) transformation.
+#This identifies the transformation of the transcriptome data that best encapsulates the structure of the WNN graph and allows a weighted combination of the protein and RNA measurements to ‘supervise’ the PCA, highlighting the most relevant sources of variation. 
+#sPCA is recommended when working with multimodal references that have been constructed with WNN analysis.
+
+bm <- ScaleData(bm, assay = 'RNA')
+bm <- RunSPCA(bm, assay = 'RNA', graph = 'wsnn')
+
+bm <- FindNeighbors(
+  object = bm,
+  reduction = "spca",
+  dims = 1:50,
+  graph.name = "spca.annoy.neighbors",
+  k.param = 50,
+  cache.index = TRUE,
+  return.neighbor = TRUE,
+  l2.norm = TRUE
+)
+```
+
+```{r}
+DimPlot(bm, reduction = 'wnn.umap', group.by = 'celltype.l2', cols = colors$cell_type) 
+
+ggsave("./celltype_wnn.refUmap.png", width=10, height=8)
+```
+
+```{r}
+#load query dataset (AML4_log already normalized as reference)
+
+AML4_log <- readRDS("/hpcnfs/scratch/PGP/ccaprioli/working/SRSF2_3_AMLs/data/AML4/AML4_log.rds")
+```
+
+```{r}
+#mapping
+#find anchors between query dataset and the multimodal reference
+anchors <- list()
+anchors <- FindTransferAnchors(
+    reference = bm,
+    query = AML4_log,
+    k.filter = NA,
+    normalization.method = "LogNormalize",
+    reference.reduction = "spca",
+    reference.neighbors = "spca.annoy.neighbors",
+    dims = 1:50
+  )
+
+#map
+AML4_log <- MapQuery(
+    anchorset = anchors,
+    query = AML4_log,
+    reference = bm,
+    refdata = list(
+      celltype = "celltype.l2", #celltype.l2 is more specific than celltype.l1
+      predicted_ADT = "ADT"),
+    reference.reduction = "spca",
+    reduction.model = "wnn.umap"
+  )
+```
+
+Reference and query data sets are now integrated; query is projected onto the UMAP coordinates of reference
+```{r}
+bm$id <- 'reference'
+AML4_log$id <- 'query'
+refquery <- merge(bm, AML4_log)
+refquery[["umap"]] <- merge(bm[["wnn.umap"]], AML4_log[["ref.umap"]])
+DimPlot(refquery, group.by = 'id', shuffle = TRUE)
+```
+
+```{r}
+DimPlot(refquery, group.by = 'id', shuffle = TRUE, cols = c('navy', 'lightblue')) +
+  theme_bw() +
+  ggtitle('bmcite reference and AML4') +
+  theme(panel.grid = element_blank())
+ggsave('ref_umap_query_reference_AML4.png', height = 6, width = 7)
+```
+
+```{r}
+#UMAP (AML only)
+
+DimPlot(AML4_log, reduction = 'ref.umap', group.by = 'predicted.celltype', cols = colors$cell_type) +
+    annotate(
+    geom = 'text', x = Inf, y = -Inf,
+    label = paste0('n = ', format(nrow(AML4_log@meta.data), big.mark = ',', trim =
+                                    TRUE)),
+    vjust = -1.5, hjust = 1.25, color = 'black', size = 3.5
+  )
+
+ggsave("./plots/AML4/AML4_log_celltype_refUmap.png", width=10, height=8)
+```
+
+```{r}
+saveRDS(AML4_log, './data/AML4/AML4_log.rds')
+```
+
+## Transfer labels to SCT object
+```{r}
+AML4 <- readRDS("/hpcnfs/scratch/PGP/ccaprioli/working/SRSF2_3_AMLs/data/AML4/AML4.rds")
+```
+
+```{r}
+# check whether order of cells is the same
+
+identical(colnames(AML4_log), colnames(AML4))
+```
+
+```{r}
+AML4$'cell_lineage' <- AML4_log$predicted.celltype
+
+AML4$cell_lineage <- factor(AML4$cell_lineage, levels = unique(AML4$cell_lineage))
+
+AML4$'predicted.celltype.score' <- AML4_log$predicted.celltype.score
+```
+
+## Discard cells with low prediction score
+### overall prediction score by cell type, normalized by number of cells
+```{r}
+table_score_by_cell_type <- AML4@meta.data %>%
+  select(cell_lineage, predicted.celltype.score) %>%
+  as.data.frame() %>%
+  pivot_wider(names_from = "cell_lineage", values_from = "predicted.celltype.score", 
+             names_repair = "minimal", values_fn = mean) %>% unlist() %>% as.data.frame() %>%
+  rownames_to_column("cell type") 
+
+ggplot(table_score_by_cell_type, 
+       aes(reorder(table_score_by_cell_type$`cell type`, table_score_by_cell_type$.), table_score_by_cell_type$.)) +
+  geom_col(fill = "grey") +
+  theme_bw() +
+  scale_y_continuous() +
+  labs(x = NULL, y = "mean prediction score") +
+  coord_flip() +
+  theme(axis.text.y = element_text(color = "black", size = 12), 
+        axis.text.x = element_text(color = "black", size = 10),
+        axis.title.x = element_text(color = "black", size = 12)) +
+  geom_hline(yintercept = 0.5, col = "darkred", linetype = 2) +
+    ggtitle("AML4") + theme(title = element_text(face = "bold"))
+
+ggsave(
+  './plots/AML4/score_cell_type.png',
+  height = 8, width = 6)
+
+```
+
+### UMAP, prediction score by cell type
+```{r}
+bind_cols(AML4@meta.data, as.data.frame(AML4@reductions$UMAP@cell.embeddings)) %>%
+  ggplot(aes(UMAP_1, UMAP_2, color = predicted.celltype.score)) +
+  geom_point(size = 0.2) +
+  theme_bw() +
+  scale_color_viridis(
+    guide = guide_colorbar(frame.colour = "black", ticks.colour = "black"),
+    labels = scales::comma,
+  ) +
+ labs(color = "Cell lineage\nprediction score") +
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  coord_fixed() +
+  annotate(
+    geom = "text", x = Inf, y = -Inf,
+    label = paste0("n = ", format(nrow(AML4@meta.data), big.mark = ",", trim = TRUE)), vjust = -1.5, hjust = 1.25, color = "black", size = 3)
+
+ggsave(
+  "./plots/AML4/umap_lineage_score.png",
+  height = 6, width = 8
+)
+```
+
+### prediction score by cell with threshold
+```{r}
+df <- as.data.frame(AML4$predicted.celltype.score) 
+colnames(df) <- 'prediction_score'
+df <- df %>% rownames_to_column('id') %>% arrange(desc(prediction_score))
+```
+
+```{r}
+length(which(df$prediction_score < 0.3))
+```
+
+```{r}
+ggplot(df, aes(prediction_score)) +
+  geom_density(fill = colors$sample['AML4']) +
+  xlim(0,1.1) +
+  theme_bw() +
+  geom_vline(xintercept = 0.3, color = "red") +
+  ggtitle('AML4') +
+    theme(panel.grid = element_blank()) 
+
+ggsave(
+  './plots/AML4/score_lineage_byCell.png', height = 5, width = 6)
+```
+
+### UMAP, prediction score by cell type with threshold
+```{r}
+bind_cols(AML4@meta.data,
+               as.data.frame(AML4@reductions$UMAP@cell.embeddings)) %>%
+  ggplot(aes(UMAP_1, UMAP_2, color = predicted.celltype.score < 0.3)) +
+  geom_point(size = 0.2) +
+  theme_bw() +
+  scale_color_manual(
+    values = c('grey', 'blue'),
+    guide = guide_legend(override.aes = list(size = 2)),
+    name = 'cell lineage prediction score',
+    labels = c('≥ 0.3', '< 0.3')
+  ) +
+    annotate(
+    geom = "text", x = Inf, y = -Inf,
+    label = paste0("n = ", format(nrow(AML4@meta.data), big.mark = ",", trim = TRUE)), vjust = -1.5, hjust = 1.25, color = "black", size = 3) +
+  theme(plot.title = element_text(face = "bold"), 
+        panel.grid = element_blank()) +
+  coord_fixed() 
+
+ggsave(
+  "./plots/AML4/umap_lineage_score_threshold.png",
+  height = 6, width = 8
+)
+```
+
+### Discard cells with lower than threshold prediction score
+```{r}
+#AML4 <- AML4[, which(AML4$predicted.celltype.score >= 0.3)]
+
+saveRDS(AML4, './data/AML4/AML4.rds')
+```
+
+#UMAP by cell types
+```{r}
+bind_cols(AML4@meta.data,
+               as.data.frame(AML4@reductions$UMAP@cell.embeddings)) %>%
+  ggplot(aes(UMAP_1, UMAP_2, color = cell_lineage)) +
+  geom_point(size = 0.2) +
+  theme_bw() +
+  scale_color_manual(
+    values = colors$cell_type,
+    guide = guide_legend(override.aes = list(size = 2))
+  ) +
+    annotate(
+    geom = "text", x = Inf, y = -Inf,
+    label = paste0("n = ", format(nrow(AML4@meta.data), big.mark = ",", trim =
+                                    TRUE)),
+      vjust = -1.5, hjust = 1.25, color = "black", size = 3) +
+  theme(plot.title = element_text(face = "bold"), 
+        legend.title = element_blank(),
+        panel.grid = element_blank()) +
+  coord_fixed() 
+
+ ggsave('./plots/AML4/umap_cell_types.png', height = 7, width = 13)
+```
+
+Composition of sample by cell type
+```{r}
+table_samples_by_cell_type <- AML4@meta.data %>%
+  dplyr::group_by(sample, cell_lineage) %>%
+  dplyr::summarize(count = n()) %>%
+  tidyr::spread(cell_lineage, count, fill = 0) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(total_cell_count = rowSums(.[c(2:ncol(.))])) %>%
+  dplyr::select(c("sample", "total_cell_count", dplyr::everything()))
+
+temp_labels <- AML4@meta.data %>%
+  group_by(sample) %>%
+  tally()
+
+table_samples_by_cell_type %>%
+  select(-c('total_cell_count')) %>%
+  reshape2::melt(id.vars = 'sample') %>%
+  mutate(sample = factor(sample, levels = levels(AML4@meta.data$sample))) %>%
+  ggplot(aes(sample, value)) +
+  geom_bar(aes(fill = variable), position = 'fill', stat = 'identity', show.legend = T) +
+  geom_text(
+    data = temp_labels,
+    aes(
+      x = sample,
+      y = Inf,
+      label = paste0('n = ', format(n, big.mark = ',', trim = TRUE)),
+      vjust = -1
+    ),
+    color = 'black', size = 2.8
+  ) +
+  scale_fill_manual(name = 'Cell type', values = colors$cell_type) +
+  scale_y_continuous(
+    name = 'Percentage [%]',
+    labels = scales::percent_format(),
+    expand = c(0.01,0)
+  ) +
+  coord_cartesian(clip = 'off') +
+  theme_bw() +
+  theme(
+    legend.position = 'right',
+    plot.title = element_text(hjust = 0.5),
+    text = element_text(size = 16),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    plot.margin = margin(t = 20, r = 0, b = 0, l = 0, unit = 'pt')
+  )
+
+ggsave(
+  './plots/AML4/composition_samples_by_cell_type.png', width = 4.5, height = 5)
+
+```
+
+```{r}
+FeaturePlot(AML4, features = "nCount_RNA", cols = c("lightgrey", "red")) +
+FeaturePlot(AML4, features = "nFeature_RNA", cols = c("lightgrey", "orange")) +
+FeaturePlot(AML4, features = "percent_MT", cols = c("lightgrey", "navy")) +
+FeaturePlot(AML4, features = "predicted.celltype.score", cols = c("lightgrey", "darkgreen")) +
+plot_layout(ncol = 2, nrow = 2)
+
+#ggsave("feat_AML4_log.png", width = 7, height = 7)
+```
+
+```{r}
+sessionInfo()
+```
