@@ -1,0 +1,503 @@
+---
+title: "Lineage shift / aberrancy"
+author: "Chiara_Caprioli"
+date: "29/12/2022"
+output:
+  html_document:
+    code_folding: hide
+---
+After Sergio Triana & Lars Velten, https://git.embl.de/triana/nrn/-/tree/master/Projection_Vignette (06/05/2021)
+
+```{r, echo=F, message=F,warning=F}
+library(tidyverse)
+library(Seurat)
+library(reshape2)
+library(SingleCellExperiment)
+library(randomForest)
+```
+
+```{r}
+# set paths
+path_main <- '/Users/ieo4874/Desktop/working/SCMseq/'
+path_data <- paste0(path_main, 'data/')
+path_results <- paste0(path_main, 'results_and_plots/lineage_map/')
+```
+
+```{r}
+# samples
+samples <- c('AML4', 'AML5', 'sAML1', 'AML2', 'AML3', 'sAML4')
+all <- c(samples, 'healthy BM')
+```
+
+```{r}
+Healthy <- readRDS(paste0(path_data, 'Healthy.rds'))
+mapped <- readRDS("~/Desktop/working/SCMseq/data/mapped.rds")
+merged_seurat_integrated <- readRDS("~/Desktop/working/SCMseq/data/merged_seurat_integrated.rds")
+```
+
+```{r, warning=FALSE, message=FALSE}
+#set colors 
+colors <- list()
+
+colors$sample <- setNames(
+  c("#227093", "#ffb142", "#485460", '#F9791EFF', '#C0D8D8FF', '#009E73FF', '#F0F0F0'), 
+  all
+)
+
+colors$SRSF2_status <- setNames(
+  c("#FF9932FF", "#405D61FF", '#F0F0F0'),
+  c("SRSF2 mutated", "SRSF2 unmutated", 'healthy BM')
+)
+
+colors$cell_cycle <- setNames(
+  c("#45aaf2", "#f1c40f", "#e74c3c"),
+  c("G1", "S", "G2M")
+)
+
+colors$discrete <- c(
+  '#046C9AFF', '#D69C4EFF', '#899DA4FF', '#C93312FF', '#D8B70AFF',
+  '#02401BFF', '#A2A475FF', '#81A88DFF', '#972D15FF', '#CADDE1FF',
+  '#7B906FFF', '#174D79FF',  '#898989FF', '#D4CDB1FF', '#708090FF',
+  '#6CA9C3FF', '#3A3533FF', '#000E33FF', '#800000FF',  '#175E78FF')
+
+my_pal <- c(
+  paletteer::paletteer_d("nationalparkcolors::Denali"),
+  paletteer:: paletteer_d("nationalparkcolors::Badlands"),
+  paletteer::paletteer_d("nationalparkcolors::GreatBasin"), 
+  paletteer::paletteer_d("nationalparkcolors::Arches"), 
+  paletteer:: paletteer_d("nationalparkcolors::MtMckinley"),
+  paletteer:: paletteer_d("nationalparkcolors::CraterLake"),
+  paletteer:: paletteer_d("nationalparkcolors::ArcticGates"),
+  paletteer:: paletteer_d("nationalparkcolors::Yellowstone")
+)
+
+colors$lineage <- setNames(
+  my_pal,
+  levels(merged_seurat_integrated$lineage)
+)
+
+colors$aggregated_lineage <- setNames(
+  c('#D69C4EFF','#C93312FF', '#174D79FF', '#CADDE1FF', "grey", "#000E33FF"),
+  c('HSC_progenitors', 'myeloid', 'T_cells', 'NK_cells', 'B_cells', 'other')
+)
+```
+
+## Aggregate lineages
+```{r}
+#merged_seurat_integrated$aggregated_lineage <- ifelse(
+#  merged_seurat_integrated$lineage %in% c("HSCs & MPPs", "Lymphomyeloid prog"), 'HSC_progenitors',
+#  ifelse(merged_seurat_integrated$lineage %in% c("Erythro-myeloid progenitors", "Early erythroid progenitor", "Late erythroid progenitor", "Aberrant erythroid",
+#             "Megakaryocyte progenitors", "Eosinophil-basophil-mast cell progenitors",
+#             "Early promyelocytes", "Late promyelocytes", "Myelocytes", 
+#             "Plasmacytoid dendritic cell progenitors", "Plasmacytoid dendritic cells", 
+#             "Conventional dendritic cell 1", "Conventional dendritic cell 2",
+#             "Classical Monocytes", "Non-classical monocytes", "Monocyte-like blasts"), 'myeloid',
+#         ifelse(merged_seurat_integrated$lineage %in% c("CD4+ naive T cells", "CD4+ memory T cells", 
+#             "CD69+PD-1+ memory CD4+ T cells", "CD4+ cytotoxic T cells",
+#             "CD8+ naive T cells", "CD8+ effector memory T cells", 
+#             "CD8+ central memory T cells", "CD8+CD103+ tissue resident memory T cells", 
+#             "GammaDelta T cells"), 'T_cells', ifelse(
+#               merged_seurat_integrated$lineage %in% c("NK cell progenitors", "NK T cells", "CD56brightCD16- NK cells", "CD56dimCD16+ NK cells"), 'NK_cells',
+#               ifelse(merged_seurat_integrated$lineage %in% c("Pre-pro-B cells", 
+#             "Pro-B cells", 
+#             "Small pre-B cell",
+#             "Pre-B cells", 
+#             "Immature B cells",
+#             "Mature naive B cells", 
+#             "Nonswitched memory B cells", 
+#             "CD11c+ memory B cells", 
+#             "Class switched memory B cells", 
+#             "Plasma cells"), 'B_cells', 'other')
+#             )))
+#)
+#
+#merged_seurat_integrated$aggregated_lineage <- factor(merged_seurat_integrated$aggregated_lineage,
+#                                                      levels = c('HSC_progenitors', 'myeloid', 
+#                                                                 'T_cells', 'NK_cells', 'B_cells', 'other'))
+#
+##saveRDS(merged_seurat_integrated, paste0(path_data, 'merged_seurat_integrated.rds')) 
+```
+
+## Plot lineage
+```{r}
+DimPlot(merged_seurat_integrated, 
+        reduction = 'UMAP', 
+        group.by = 'lineage', 
+        pt.size = 0.1, shuffle = T, 
+        cols = colors$lineage) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank(),
+        legend.position = 'none') +
+  facet_wrap(~lineage)
+
+ggsave(paste0(path_results, 'plots/umap_lineage_split.png'), 
+       width = 20, height = 18)
+```
+
+```{r}
+DimPlot(merged_seurat_integrated, 
+        reduction = 'UMAP', 
+        group.by = 'lineage', 
+        pt.size = 0.1, shuffle = T, 
+        cols = colors$lineage) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank())
+
+ggsave(paste0(path_results, 'plots/umap_lineage_legend.png'), 
+       width = 13, height = 5)
+```
+
+```{r}
+DimPlot(merged_seurat_integrated, 
+        reduction = 'UMAP', 
+        group.by = 'lineage', 
+        pt.size = 0.1, shuffle = T, 
+        label = T, repel = T, label.size = 2,
+        cols = colors$lineage) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank(),
+        legend.position = 'none')
+
+ggsave(paste0(path_results, 'plots/umap_lineage_labels.png'), 
+       width = 6, height = 5)
+```
+
+```{r}
+DimPlot(merged_seurat_integrated, 
+        reduction = 'UMAP', 
+        group.by = 'aggregated_lineage', 
+        pt.size = 0.1, shuffle = T, 
+        cols = colors$aggregated_lineage) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank())
+
+ggsave(paste0(path_results, 'plots/umap_aggr_lineage.png'), 
+       width = 6, height = 5)
+```
+
+## Quantify shifts in cell state frequency
+
+Quantify how often each cell type occurs in each sample and group samples by cell state abundance. 
+```{r}
+mapped$orig.ident <- merged_seurat_integrated$orig.ident
+mapped$sample <- merged_seurat_integrated$sample
+mapped$SRSF2_status <- merged_seurat_integrated$SRSF2_status
+mapped$aggregated_lineage <- merged_seurat_integrated$aggregated_lineage
+
+
+mapped_AMLs <- mapped %>%
+  filter(orig.ident == 'AML')
+```
+
+```{r}
+#by sample
+forcluster <- table(as.character(mapped_AMLs$ct), as.character(mapped_AMLs$sample))
+
+#forcluster <- forcluster[apply(forcluster,1,sum)> 100 & !grepl("T cell|NK cell|B cell", rownames(forcluster)),]
+forcluster <- t(t(forcluster)/apply(forcluster,2,sum)) #proportion of each cell type in each sample
+
+#annotate SRSF2 status by sample
+ann_col <- data.frame(
+  sample = mapped_AMLs$sample,
+  SRSF2_status = mapped_AMLs$SRSF2_status
+) %>% distinct()
+ann_col <- ann_col[match(colnames(forcluster), ann_col$sample),]
+ann_col <- ann_col %>% column_to_rownames(var = 'sample') 
+
+ann_colors = list(
+  SRSF2_status = c('SRSF2 mutated' = "#FF9932FF", 'SRSF2 unmutated' = "#405D61FF")
+)
+
+pheatmap::pheatmap(forcluster, 
+                   cluster_rows = T, cluster_cols = T,
+                   clustering_method = "ward.D2",
+                   color = colorRampPalette(rev(viridis::viridis(n = 100, option = 'mako')))(100),
+                   angle_col = 45, annotation_col = ann_col,
+                   annotation_colors = ann_colors,
+                   cellwidth = 30, cellheight = 15,
+                   filename = paste0(path_results, 'plots/lineage_abundance_heatmap.png'),
+                   width = 10, height = 10)
+```
+
+```{r}
+# bar plots with proportions of each cell type in each sample
+```
+
+```{r}
+bckgr <- data.frame(x = Embeddings(Healthy, reduction = "MOFAUMAP")[,1],
+                    y = Embeddings(Healthy, reduction = "MOFAUMAP")[,2])
+
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+
+mapped <- split(mapped, mapped$sample)
+mapped <- lapply(mapped, function(x) {
+  x$d <- get_density(x$x, x$y)
+  x$dnorm <- x$d / max(x$d)
+  x
+})
+mapped <- do.call(rbind, mapped)
+```
+
+```{r}
+dens_plot_list <- list()
+for (s in unique(mapped$sample)) {
+  sample_mapped <- mapped[which(mapped$sample == s),]
+  
+  p <- qplot(x = x, y = y, data = bckgr, color = I("#BBBBBB"), size=I(0.1)) + 
+    geom_point(aes(color = dnorm), data = sample_mapped, size=I(0.1)) + 
+    xlab("MOFAUMAP_1") + ylab("MOFAUMAP_2") +
+    scale_color_gradientn(colours = c("black","blue","red","orange")) +
+    ggtitle(s) +
+    theme_bw() + 
+    theme(panel.grid = element_blank()) 
+  
+  dens_plot_list[[s]] <- p
+}
+
+ggsave(filename = paste0(path_results, 'plots/mofaumap_density.png'),
+       device = "png",
+       plot = gridExtra::marrangeGrob(dens_plot_list, nrow = 3, ncol = 3, top = NULL),
+       width = 18, height = 15)
+```
+
+## Aberration score
+```{r}
+FeaturePlot(merged_seurat_integrated, reduction = 'UMAP',
+            features = 'score', pt.size = 0.1) +
+  theme_bw() +
+  scale_colour_viridis_c(option = 'turbo', direction = -1,
+                        breaks = c(min(merged_seurat_integrated$score), 
+                                    max(merged_seurat_integrated$score)), 
+                        labels = c('Aberrant', 'Healthy-like')) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank()) +
+  facet_wrap(~merged_seurat_integrated$orig.ident)
+
+ggsave(paste0(path_results, 'plots/umap_AML_BM_score.png'), width = 11, height = 5)
+```
+
+```{r}
+FeaturePlot(merged_seurat_integrated[,which(merged_seurat_integrated$orig.ident == 'AML')], reduction = 'UMAP',
+            features = 'score', pt.size = 0.1) +
+  theme_bw() +
+  scale_colour_viridis_c(option = 'turbo', direction = -1,
+                        breaks = c(min(merged_seurat_integrated$score[which(merged_seurat_integrated$orig.ident == 'AML')]), 
+                                    max(merged_seurat_integrated$score[which(merged_seurat_integrated$orig.ident == 'AML')])), 
+                        labels = c('Aberrant', 'Healthy-like')) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank()) +
+  facet_wrap(~merged_seurat_integrated$sample[which(merged_seurat_integrated$orig.ident == 'AML')])
+
+ggsave(paste0(path_results, 'plots/umap_AML_samples_score.png'), width = 16, height = 10)
+```
+
+```{r}
+#boxplot by lineage and sample
+p <- merged_seurat_integrated@meta.data %>%
+  ggplot(aes(x = lineage, y = score, fill = lineage)) +
+  geom_boxplot(outlier.size = 0.1) +
+  scale_fill_manual(values = colors$lineage) +
+  theme_bw() +
+  ylab('Similarity score') +
+  ylim(0,1) +
+  scale_x_discrete(limits=rev) +
+  coord_flip() +
+  facet_wrap(~sample, ncol = length(all)) +
+  theme(panel.grid = element_blank(),
+         strip.text = element_text(face = 'bold', size = 25),
+         legend.position = 'none',
+         axis.title.x = element_text(color = 'black', size = 20),
+         axis.title.y = element_blank(),
+         axis.text.x = element_text(color = 'black', size = 18, angle = 30, hjust = 1, vjust = 1),
+         axis.text.y = element_text(color = 'black', size = 18),
+        panel.spacing.x = unit(20, 'pt')) 
+
+ggsave(paste0(path_results, 'plots/score_boxplot_all.png'), p, width = 25, height = 15)
+```
+
+```{r}
+# table statistics
+stat_lineage_sample <- list()
+stat_lineage <- list()
+
+for (s in unique(merged_seurat_integrated$sample)) {
+  for (l in levels(merged_seurat_integrated$lineage)) {
+    x = summary(
+      merged_seurat_integrated$score[which(merged_seurat_integrated$sample == s & 
+                                             merged_seurat_integrated$lineage == l)]
+      )
+    stat_lineage[[l]] <- x
+  }
+  df_ <- do.call(rbind, stat_lineage) %>% 
+    as.data.frame() %>% 
+    rownames_to_column(var = 'lineage')
+  stat_lineage_sample[[s]] <- df_
+}
+
+for (s in names(stat_lineage_sample)) {
+  write_csv(stat_lineage_sample[[s]], paste0(path_results, 'tables/stat_lineage_score_', s, '.csv'))
+}
+```
+
+######################
+## Identifying cell state specific differential gene expression
+
+We use DESeq2 for differential expression testing and treat each cell type from each patient as a bulk sample. DESeq2 empirically estimates sample-to-sample variance: When comparing between samples, batch-to-batch noise is more important to account for than the specific distributional properties of single cell RNA-seq data.
+
+We require a cell type to be represented withat least 20 cells in a sample for that sample to enter the comparison. The test we use accounts for patient age and gender as a covariate. Please adjust the code below to your patient/sample-level covariates.
+
+```{r runDE, warning=F, message=F}
+
+if (reproduce) {
+  Healthy$status <- "healthy"
+  merged <- merge(Healthy, y = merged, add.cell.ids = c("reference", "query"), project = "abAML")
+}
+
+cat("Samples included into DE comparison (min 20 cells per sample):\n")
+
+getTest <- function(id, assay = "AB") {
+  ab <- GetAssayData(merged, assay = assay, slot = "counts")
+  
+  summed <-sapply(unique(merged$Batch), function(btc) {
+    use <- merged$Batch == btc & Idents(merged)  == id
+    if (sum(use)==1) ab[,merged$Batch  == btc &Idents(merged)  == id] else if (sum(use)==0) rep(0, nrow(ab)) else apply(ab[,merged$Batch  == btc &Idents(merged)  == id],1,sum)
+  }) 
+  ncells <- sapply(unique(merged$Batch), function(btc) sum(merged$Batch == btc & Idents(merged) == id))
+  rownames(summed) <- rownames(ab)
+  sums <- apply(summed,2,sum)
+  summed <- summed[,ncells > 20]
+  cat(id, ":", paste(colnames(summed),collapse = ","),"\n")
+  
+  #adjust to include your cavariates
+  dds <- data.frame(row.names = colnames(summed), 
+                    individual =colnames(summed),
+                    status = factor(patient.metadata[colnames(summed),"Status"]),
+                    age = scale(patient.metadata[colnames(summed),"Age"]),
+                    gender = factor(patient.metadata[colnames(summed),"Gender"]))
+  
+  statuscounts <- table(dds$status)
+  runaml <- statuscounts["diseased"] > 2 & statuscounts["healthy"] > 2
+
+  tryCatch(
+    {
+   if (runaml) {
+     #adjust to include your covariates
+     deseq <- DESeqDataSetFromMatrix(summed, dds, ~  status + age + gender )
+     deseq <- estimateSizeFactors(deseq)
+     deseq <- estimateDispersions(deseq)
+     deseq <- nbinomWaldTest(deseq)
+     results <- as.data.frame(results(deseq, contrast = c("status","healthy","diseased")))
+     results$gene <- rownames(results)
+     results$ct <- id
+     results$nAML <- statuscounts["diseased"]
+     results$nHealthy <- statuscounts["healthy"] 
+     aml <- T
+     
+     return(results)
+   } else return(NULL)
+       
+    
+    
+    
+    }, error = function(e) {warning("In ", id, e); NULL}
+  )
+  
+}
+
+#if you want to look at RNA differential expression, replace assay by RNA
+ all.tests.covariate <- lapply(unique(as.character(Idents(merged) )), getTest, assay="AB")
+  all.tests.covariate <- do.call(rbind, all.tests.covariate)
+
+```
+
+This results in a table of differtentially expressed genes per cell type.
+
+```{r showDE}
+head(all.tests.covariate)
+```
+
+
+## Identifying inter-patient variability
+
+To identify genes with a particularly high degree of patient to patient variability, we for each cell type train random forest classifiers to predict sample from gene expression. Genes with a particularly high importance to this classifier are sample specific. We excluded healthy samples from this to look at patient-to-patient variability. 
+
+```{r randomforest}
+
+AMLs <- subset(merged, status == "diseased")
+Healthy <- subset(merged, status != "diseased")
+
+#train RF 
+getRF <- function(ct) {
+  AMLs.myeloid <- subset(AMLs, idents = ct)
+  ab <- GetAssayData(AMLs.myeloid, assay = "AB", slot = "counts")
+  ncells <- sapply(unique(AMLs.myeloid$Batch), function(btc) sum(AMLs.myeloid$Batch== btc & Idents(AMLs.myeloid) == ct))
+  
+  usepat <- unique(AMLs.myeloid$Batch)[ncells>20] #same fitlering criterion as above
+  if (length(usepat) <= 2) return(NULL)
+  AMLs.myeloid <- subset(AMLs.myeloid, Batch %in% usepat)
+  pat <- factor(AMLs.myeloid$Batch)
+  pred <- t(GetAssayData(AMLs.myeloid, "AB", slot = "data"))
+
+  if (length(unique(pat)) > 1) {
+    rf <- randomForest(as.matrix(pred), y = pat, importance = T)
+    data.frame(row.names = rownames(rf$importance), ct = ct, gene = rownames(rf$importance), 
+               MeanDecreaseAccuracy = rf$importance[,"MeanDecreaseAccuracy"],
+               MeanDecreaseGini = rf$importance[,"MeanDecreaseGini"],
+               MeanDecreaseAccuracySD = rf$importanceSD[,"MeanDecreaseAccuracy"],
+              norm =  rf$importance[,"MeanDecreaseAccuracy"] / max(rf$importance[,"MeanDecreaseAccuracy"]))  
+  } else NULL
+  
+  
+}
+
+ct <- Idents(AMLs)
+usect <- table(ct)
+usect <- names(usect)[usect > 10]
+
+ rfs <- lapply(usect, getRF)
+ rfs <- do.call(rbind, rfs)
+```
+
+
+## Final plots
+
+Finally we make plots that display the differential expression and the sample to sample variability:
+
+```{r setcelltype}
+showcelltypes <- c("HSCs & MPPs", "Myelocytes")
+usecounts.AMLs <- GetAssayData(AMLs, assay = "AB", slot="counts")
+usecounts.Healthy <- GetAssayData(Healthy, assay = "AB", slot="counts")
+```
+
+```{r makedeplots, echo =F, fig.width=8, fig.height=3.4}
+
+means <-lapply(showcelltypes, function(x) {
+  data.frame(ct = x,
+             aml = apply(usecounts.AMLs[,Idents(AMLs)  == x], 1, mean),
+             healthy = apply(usecounts.Healthy[,Idents(Healthy)  == x ], 1, mean),
+             gene  = rownames(usecounts.Healthy))
+  
+})
+
+means <- do.call(rbind, means)
+
+sig_means <- merge(means, subset(all.tests.covariate, padj < 0.1 & ct %in% showcelltypes))
+means <- merge(means, rfs)
+complete <- merge(means, sig_means, all=T)
+
+qplot(x = healthy, y = aml, size=-log10(padj), data =complete, log="xy" , color = norm)+facet_wrap(~ ct) + 
+  geom_text_repel(size = 3, aes(label = gsub("-AB","",gene)),data = subset(sig_means, padj < 0.0001), color ="black")+ theme_bw() + theme(panel.grid = element_blank()) + 
+  scale_color_gradientn(colors = c("grey","black","blue","red","orange"),name = "Inter-patient\nvariability") + scale_size_area(name = "-log10 p\nDE", max_size = 3,na.value = 0.5) + scale_shape_discrete(name = "LSC marker\n(Hanekamp 2017)") +
+  xlab("Counts in healthy individuals") + ylab("Counts in leukemic individuals")
+  
+```
