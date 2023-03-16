@@ -1,2 +1,2 @@
 # SCM-seq 
-This repo collects mainn scripts written for scRNA-seq analyses performed within the SCM-seq project.
+This repo collects main scripts for scRNA-seq and mutation analyses performed within the SCM-seq project.
