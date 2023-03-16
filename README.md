@@ -1,2 +1,2 @@
 # SCM-seq
-This repo collects scrits written for scRNA-seq analyses performed in my PhD's thesis.
+This repo collects scripts written for scRNA-seq analyses performed in my PhD's thesis.
