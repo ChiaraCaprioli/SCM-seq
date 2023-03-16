@@ -278,7 +278,8 @@ ggsave(
 )
 ```
 
-### Discard cells with lower than threshold prediction score
+### Discard cells with lower than threshold prediction score (OPTIONAL)
+only do this after double-checking with other lineage-related signatures
 ```{r}
 #AML4 <- AML4[, which(AML4$predicted.celltype.score >= 0.3)]
 
