@@ -1,3 +1,13 @@
+---
+title: "04_clustering"
+author: "Chiara Caprioli"
+date: "July 6th 2023"
+---
+
+**Aims:**
+compute Leiven clusters spanning different k and resolution
+
+***Computationally intensive***
 
 ## Set up
 library(tidyverse)
@@ -21,7 +31,7 @@ my_logger <- logger(threshold = "INFO", appenders = file_appender)
 ## Load Seurat object 
 final_seurat <- readRDS(paste0(path_main, 'final_seurat.rds'))
 
-## Compute clusters
+## Compute clusters by Leiden algorithm
 use_condaenv("r-reticulate")
 
 set.seed(123)
