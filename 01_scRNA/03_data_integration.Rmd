@@ -1,11 +1,19 @@
 ---
 title: "03_data_integration"
-author: "Chiara_Caprioli"
+author: "Chiara Caprioli"
 date: "April 6th 2023"
 output:
   html_document:
     code_folding: hide
 ---
+
+**Aims:**
+1. compute batch/sample-aware hypervariable features and PC
+2. check sources of variation before and after scaling
+3. batch correction by Harmony
+4. batch correction by Scanorama
+5. check integrated dataset
+
 ## Set up
 ```{r, setup, include=FALSE}
 # set working directory
@@ -43,81 +51,81 @@ merged_mapped_log <- readRDS(paste0(path_data, 'merged_mapped_log.rds'))
 ```
 
 ```{r}
-# samples
-samples <- c('AML4', 'AML5', 'AML6', 'sAML1',
-             'AML2', 'AML3', 'sAML16',
-             'hBM1', 'hBM2', 'hBM3')
+# # samples
+# samples <- c('AML4', 'AML5', 'AML6', 'sAML1',
+#              'AML2', 'AML3', 'sAML16',
+#              'hBM1', 'hBM2', 'hBM3')
 
-# samples for which sc genotype exists
-samples_genotype <- c('AML4', 'AML5', 'sAML1')
+# # samples for which sc genotype exists
+# samples_genotype <- c('AML4', 'AML5', 'sAML1')
 
-#set colors 
-colors <- list()
+# #set colors 
+# colors <- list()
 
-colors$sample <- setNames(
-  c("#FFEDA0", "#FEB24C", "#FC4E2A", "#BD0026", 
-    "#66C2A5", "#3288BD", "#5E4FA2", 
-    "#BDBDBD", "#737373", "#252525"),  
-  samples
-)
+# colors$sample <- setNames(
+#   c("#FFEDA0", "#FEB24C", "#FC4E2A", "#BD0026", 
+#     "#66C2A5", "#3288BD", "#5E4FA2", 
+#     "#BDBDBD", "#737373", "#252525"),  
+#   samples
+# )
 
-colors$cohort <- setNames(
-  c("#FF9932FF", "#405D61FF", '#F0F0F0'),
-  c("SRSF2mut", "SRSF2wt", 'hBM')
-)
+# colors$cohort <- setNames(
+#   c("#FF9932FF", "#405D61FF", '#F0F0F0'),
+#   c("SRSF2mut", "SRSF2wt", 'hBM')
+# )
 
-colors$cell_cycle <- setNames(
-  c("#45aaf2", "#f1c40f", "#e74c3c"),
-  c("G1", "S", "G2M")
-)
+# colors$cell_cycle <- setNames(
+#   c("#45aaf2", "#f1c40f", "#e74c3c"),
+#   c("G1", "S", "G2M")
+# )
 
-colors$discrete <- c(
-  '#046C9AFF', '#D69C4EFF', '#899DA4FF', '#C93312FF', '#D8B70AFF',
-  '#02401BFF', '#A2A475FF', '#81A88DFF', '#972D15FF', '#CADDE1FF',
-  '#7B906FFF', '#174D79FF',  '#898989FF', '#D4CDB1FF', '#708090FF',
-  '#6CA9C3FF', '#3A3533FF', '#000E33FF', '#800000FF',  '#175E78FF')
+# colors$discrete <- c(
+#   '#046C9AFF', '#D69C4EFF', '#899DA4FF', '#C93312FF', '#D8B70AFF',
+#   '#02401BFF', '#A2A475FF', '#81A88DFF', '#972D15FF', '#CADDE1FF',
+#   '#7B906FFF', '#174D79FF',  '#898989FF', '#D4CDB1FF', '#708090FF',
+#   '#6CA9C3FF', '#3A3533FF', '#000E33FF', '#800000FF',  '#175E78FF')
 
-colors$genotype <- setNames(
-  c('darkred', 'steelblue', 'lightgrey'),
-  c('mutated', 'wild-type', 'mismatch'))
+# colors$genotype <- setNames(
+#   c('darkred', 'steelblue', 'lightgrey'),
+#   c('mutated', 'wild-type', 'mismatch'))
 
-colors$col_keep <- setNames(
-  c("#FEB24C", "#525252"),
-  c('included', 'discarded'))
+# colors$col_keep <- setNames(
+#   c("#FEB24C", "#525252"),
+#   c('included', 'discarded'))
 
-# set lineage colors
-my_pal <- c(
-  paletteer::paletteer_d("nationalparkcolors::Denali"),
-  paletteer:: paletteer_d("nationalparkcolors::Badlands"),
-  paletteer::paletteer_d("nationalparkcolors::GreatBasin"), 
-  paletteer::paletteer_d("nationalparkcolors::Arches"), 
-  paletteer:: paletteer_d("nationalparkcolors::MtMckinley"),
-  paletteer:: paletteer_d("nationalparkcolors::CraterLake"),
-  paletteer:: paletteer_d("nationalparkcolors::ArcticGates"),
-  paletteer:: paletteer_d("nationalparkcolors::Yellowstone")
-)
+# # set lineage colors
+# my_pal <- c(
+#   paletteer::paletteer_d("nationalparkcolors::Denali"),
+#   paletteer:: paletteer_d("nationalparkcolors::Badlands"),
+#   paletteer::paletteer_d("nationalparkcolors::GreatBasin"), 
+#   paletteer::paletteer_d("nationalparkcolors::Arches"), 
+#   paletteer:: paletteer_d("nationalparkcolors::MtMckinley"),
+#   paletteer:: paletteer_d("nationalparkcolors::CraterLake"),
+#   paletteer:: paletteer_d("nationalparkcolors::ArcticGates"),
+#   paletteer:: paletteer_d("nationalparkcolors::Yellowstone")
+# )
 
-colors$lineage <- setNames(
-  my_pal,
-  levels(merged_mapped_log$lineage)
-)
+# colors$lineage <- setNames(
+#   my_pal,
+#   levels(merged_mapped_log$lineage)
+# )
 
-colors$aggregated_lineage1 <- setNames(
-  c("#FED976", '#FD8D3C','darkred', "#238443", '#174D79FF', '#CADDE1FF', "grey", "#000E33FF"),
-  levels(merged_mapped_log$aggregated_lineage1)
-)
+# colors$aggregated_lineage1 <- setNames(
+#   c("#FED976", '#FD8D3C','darkred', "#238443", '#174D79FF', '#CADDE1FF', "grey", "#000E33FF"),
+#   levels(merged_mapped_log$aggregated_lineage1)
+# )
 
-colors$aggregated_lineage2 <- setNames(
-  c("#FED976", '#FD8D3C','darkred', 
-    "#3A5836FF", "#8073AC",
-    "#DFC27D", "#DBA662FF", "#80CDC1",
-    '#174D79FF', '#CADDE1FF', 
-    "#F7ECD8FF", "grey", 
-    "#000E33FF"),
-  levels(merged_mapped_log$aggregated_lineage2)
-)
+# colors$aggregated_lineage2 <- setNames(
+#   c("#FED976", '#FD8D3C','darkred', 
+#     "#3A5836FF", "#8073AC",
+#     "#DFC27D", "#DBA662FF", "#80CDC1",
+#     '#174D79FF', '#CADDE1FF', 
+#     "#F7ECD8FF", "grey", 
+#     "#000E33FF"),
+#   levels(merged_mapped_log$aggregated_lineage2)
+# )
 
-save(samples, samples_genotype, colors, file = paste0(path_data, "settings.RData"))
+# save(samples, samples_genotype, colors, file = paste0(path_data, "settings.RData"))
 ```
 
 ```{r}

@@ -1,3 +1,13 @@
+---
+title: "05_clustering_diagnostics"
+author: "Chiara Caprioli"
+date: "July 6th 2023"
+---
+
+**Aims:**
+Evaluate clustering within and across any given k/resolution combination by different diagnostic metrics
+
+***Computationally intensive***
 
 ## Set up
 library(tidyverse)

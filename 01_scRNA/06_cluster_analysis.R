@@ -1,3 +1,17 @@
+---
+title: "05_cluster_analysis"
+author: "Chiara Caprioli"
+date: "July 6th 2023"
+---
+
+**Aims:**
+1. pick chosen clustering k/resolution and run new kNN/UMAP according to chosen k
+2. QC by cluster and remove residual bad cells
+3. save high-quality list of CBs with metadata
+4. new embedding without bad cells 
+5. composition by clusters and cluster composition according to different variables (sample, cohort, lineage, cell cycle)
+6. compute marker genes by cluster and perform functional annotation
+
 ## Set up
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -156,6 +170,10 @@ final_seurat <- final_seurat[,which(!colnames(final_seurat) %in% cells_cluster_1
 
 # save polished seurat object
 saveRDS(final_seurat, paste0(path_data, 'final_seurat.rds'))
+
+# save high-quality list of CBs with metadata
+df_meta <- final_seurat@meta.data
+write_csv(df_meta, paste0(path_data, 'high_quality_cb_meta.csv')) 
 
 # new embedding without bad cells
 final_seurat <- FindNeighbors(
@@ -327,7 +345,7 @@ ggsave(paste0(path_results, 'plots/umap_clusters_clean.png'), p7,
        width = 6, height = 5)
 
 ## Abundance
-### Sample/condition composition by clusters
+### Sample/cohort composition by clusters
 
 # percentage sample
 table_samples_by_clusters <- final_seurat@meta.data %>%
@@ -435,7 +453,7 @@ ggsave(paste0(path_results, 'plots/composition_condition_clusters.png'),
        p2, width = 5, height = 4)
 
 
-### Cluster composition by sample and condition
+### Cluster composition by sample and cohort
 
 # percentage sample
 table_clusters_by_samples <- final_seurat@meta.data %>%
@@ -835,4 +853,3 @@ gsea_complete <- do.call(rbind, gsea_all2)
 write_csv(gsea_complete, paste0(path_results, 'tables/gsea_all.csv'))
 
 sessionInfo()
-
