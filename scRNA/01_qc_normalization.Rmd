@@ -8,7 +8,7 @@ output:
 ---
 
 **Aims:**
-1. import cellranger count matrices and create data object (merging all samples)
+1. import cellranger count matrices and create merged data object
 2. remove doublets
 3. remove cell with low gene and transcript counts (adaptive thresholds method)
 4. remove lowly expressed genes
