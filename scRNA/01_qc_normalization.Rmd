@@ -1,11 +1,22 @@
 ---
 title: "01_qc_normalization"
-author: "Chiara_Caprioli"
+author: "Chiara Caprioli"
 date: "April 6th 2023"
 output:
   html_document:
     code_folding: hide
 ---
+
+**Aims:**
+1. import cellranger count matrices and create merged data object
+2. remove doublets
+3. remove cell with low gene and transcript counts (adaptive thresholds method)
+4. remove lowly expressed genes
+5. create merged Seurat object 
+6. log normalization
+7. cell cycle analysis
+8. set batch metadata
+
 ## Set up
 ```{r, setup, include=FALSE}
 # set working directory

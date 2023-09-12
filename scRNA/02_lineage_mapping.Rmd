@@ -1,11 +1,20 @@
 ---
 title: "02_lineage_mapping"
-author: "Chiara_Caprioli"
+author: "Chiara Caprioli"
 date: "July 6th 2023"
 output:
   html_document:
     code_folding: hide
 ---
+
+**Aims:**
+1. Load and explore external single-cell reference of healthy BM donors
+2. Aggregate cell lineages into wider categories 
+3. Check marker genes of lineages in reference and annotate according to HCA signatures
+4. Approach 1: Cell lineage and pseudotime assignment by scmap (Triana's reference RNA + proteins)
+5. Approach 2: Cell lineage assignment by singleR (Triana's reference RNA)
+6. Check agreement between scmap and singleR
+7. Approach 3: Gene modules according to cell lineage signatures (Human Cell Atlas BM)
 
 ## Set up
 ```{r, echo=F, message=F, warning=F}
@@ -67,9 +76,13 @@ colors$discrete <- c(
 ```
 
 ## Load, tidy up and explore reference
-From Triana et al., 
-Seurat object of well-annotated reference of cell states encountered in blood and bone marrow. 
-Antibody counts are CLR normalized and the RNA counts were Log Normalized (query has to be the same way)
+External reference comes from Triana et al. (https://doi.org/10.1038/s41590-021-01059-0) as a Seurat object.
+It consists of 6 healthy BM donors (3 young + 3 aged) profiled by CITE-seq and annotated to comprise different
+cell states encountered in bone marrow, including both categorical cell type labels and lineage-specific pseudotime.
+In the study, a set of 462 genes was identified to maximize information about cell states in the bone marrow. 
+MOFAUMAP embeddings reflect both RNA and protein contribution to multiomics factor analysis.
+Antibody counts are CLR normalized and the RNA counts were Log Normalized; our query samples need to be the same way.
+
 ```{r}
 #options(timeout = max(1000, getOption("timeout")))
 #Healthy <- readRDS(url("https://ndownloader.figshare.com/files/28408638")) #in case this link breaks, see #https://doi.org/10.6084/m9.figshare.13397651.v3
@@ -378,8 +391,14 @@ lineage_markers_ref <- FindAllMarkers(Healthy,
                                       logfc.threshold = 0.25,
                                       test.use = "wilcox",
                                       slot = "data")
+```
 
-# validation by external single-cell study/annotation
+We also annotate markers according to cell lineage-specific transcriptional signatures derived 
+from the Human Cell Atlas (HCA) BM study (Hay et al., 10.1016/j.exphem.2018.09.004). 
+This independent single-cell dataset includes 8 healthy BM donors spanning different ages and sexes. 
+Discrepancies between Triana's labels and HCA's labels might be due to the lack of surface protein information in the latter.
+
+```{r}
 hay <- msigdbr(species = 'Homo sapiens', category = 'C8') 
 names_ <- unique(hay$gs_name)
 names_sign <- names_[which(grepl('HAY', names_) == TRUE)]
@@ -538,7 +557,8 @@ counts.projection <- normalized_counts[intersect(rownames(normalized_counts), ro
 dim(counts.projection) #449 45493
 ```
 
-Next we use the routines from the `scmap` package to identify the nearest neighbors between query data (`counts.projection`) and Triana's reference data (`Healthy`). This computation can take a while, several hours in the case of large datasets with 10,000s of cells.
+Next we use the routines from the `scmap` package to identify the nearest neighbors between query data (`counts.projection`) and Triana's reference data (`Healthy`). 
+This computation can take a while.
 ```{r scmap, message=F, warning=F}
 #set up query data
 sce_Culture <- SingleCellExperiment(assays = list(normcounts =  as.matrix(counts.projection)))
@@ -568,10 +588,10 @@ Culture_Map <- scmapCell(
 ```
 
 We use the nearest neighbor information to:
-*compute the embedding of query cells in the reference umap
-*compute the pseudotime of query cells projected in the reference umap
-*identify the most similar cell type 
-*compute a score that determines how similar each query cell is to the reference
+-compute the embedding of query cells in the reference umap
+-compute the pseudotime of query cells projected in the reference umap
+-identify the most similar cell type 
+-compute a score that determines how similar each query cell is to the reference
 ```{r project}
 # v1 (original, no pseudotime)
 #Calc<-function(id,cult){
@@ -678,7 +698,7 @@ ggsave(filename = paste0(path_results, 'plots/mofaumap_density.png'),
 ```
 
 ### Explore Pseudotime projection
-Reference trajectories have been calculated on MOFAUMAP embeddings, by slingshot (see Triana et al).
+Reference trajectories have been calculated on MOFAUMAP embeddings by slingshot (see Triana et al).
 *Start = HSC
 *End = myelocytes, class switched memory B, late erythroid progenitors, megakaryocytes progenitors, conventional dendritic cells
 ```{r}
@@ -844,7 +864,7 @@ dev.off()
 
 We prioritize lineage assignment by scmap as compared to other methods because we are interested in:
 * relying on both RNA and protein data (more robust than RNA alone)
-* transferring pseudotime projection based on a hBM reference
+* transferring pseudotime projection based on hBM reference
 
 However, we test a couple of additional approaches in order to validate assignment according to scmap.
 
@@ -1070,8 +1090,6 @@ Heatmap(
 
 dev.off()
 ```
-
-TO DO: jaccard index
 
 ## Approach 3: Hay's signatures
 
