@@ -22,6 +22,9 @@ genotype_analysis/
 │       ├── genotype_imputation_diff_appr_5%_err
 │       └── tg_wes_intersect.csv
 └── results
+    ├── all_samples
+    │   ├── plots
+    │   └── tables
     └── sample1
         ├── plots
         └── tables
