@@ -19,3 +19,16 @@ For the time being, the workflow includes the following steps (order is mandator
 6. **Isoform analysis**
 
 Steps 2-4 are enclosed into a dedicated [Snakemake workflow](https://snakemake.readthedocs.io/en/stable/index.html).
+
+proposed structure for genotype analysis folder
+```
+genotype_analysis/
+├── data
+│   └── sample1
+│       ├── df_bc_all.csv
+│       ├── genotype_imputation_diff_appr_5%_err
+│       └── tg_wes_intersect.csv
+└── results
+    ├── plots
+    └── tables
+```
