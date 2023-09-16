@@ -16,16 +16,10 @@
 Currently, ```05_genotype_analysis``` relies on the following folder structure:
 ```
 genotype_analysis/
-├── data
-│   └── sample1
-│       ├── df_bc_all.csv
-│       ├── genotype_imputation_diff_appr_5%_err
-│       └── tg_wes_intersect.csv
-└── results
-    ├── all_samples
-    │   ├── plots
-    │   └── tables
-    └── sample1
-        ├── plots
-        └── tables
+├── all_samples
+│   ├── plots
+│   └── tables
+└── sample1
+    ├── plots
+    └── tables
 ```
