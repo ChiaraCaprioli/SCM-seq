@@ -2,7 +2,7 @@
 
 ```05_genotype_analysis``` follows Iman's snakemake pipeline for ONT reads pre-processing, mutations mapping, CB demultiplexing and genotype confidence assignment, and extends genotype analysis to the following aims:
 
-- xx
+- Filter genotyped variants and cells
 - Tiering
 - Assignment to scRNA metadata object
 - Statistics
