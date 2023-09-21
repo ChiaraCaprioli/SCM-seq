@@ -441,6 +441,6 @@ for (s in samples_genotype) {
 
 # Session info
 ```{r}
-sesessionInfo()
+sessionInfo()
 ```
 
