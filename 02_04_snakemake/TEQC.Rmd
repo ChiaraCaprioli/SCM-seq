@@ -1,0 +1,446 @@
+---
+title: "Target enrichment quality check"
+author: "Chiara Caprioli"
+date: "September 20th 2023"
+output: html_document
+---
+
+AIM: to investigate 
+- target enrichment performance
+- relationship with target expression  
+
+# Set up
+```{r, message=FALSE}
+# load libraries
+suppressPackageStartupMessages({
+  library(TEQC)
+  library(tidyverse)
+  library(biomaRt)
+  library(Seurat)
+  library(ggpubr)
+})
+
+hsapiens.anno <- 
+  useEnsembl(
+    biomart = "genes", 
+    dataset = "hsapiens_gene_ensembl"
+    #mirror = "asia"
+    )
+
+# set paths
+path_main <- "/hpcnfs/scratch/temporary/ccaprioli/"
+path_results <- paste0(path_main, "coverage/")
+path_targets <- "/hpcnfs/scratch/PGP/ccaprioli/3_AMLs_thesis_analysis/data/coverage/3394981_Covered.bed" # /path/to/target.bed
+
+# load custom settings
+load(paste0(path_main, "data/settings.RData"))
+
+# target chromosomes
+chr <- c(paste0("chr", 1:22), "chrX", "chrY")
+
+# samples
+samples_genotype <- c("AML4", "AML5", "sAML1")
+
+# WES mutations, including targets
+target_mutations <- read_csv(paste0(path_main, "data/target_mutations.csv"))
+```
+
+# Prepare bed file with targets
+```{r, message=FALSE}
+# load bed file with targets 
+targets <- get.targets(
+  targetsfile = path_targets, 
+  chrcol = 1, 
+  startcol = 2, endcol = 3, 
+  skip = 2,
+  zerobased = F
+)
+  
+#  helper function to find overlaps with gene names
+splitByOverlap <- function(query, subject, column="SYMBOL", ...) {
+    olaps <- findOverlaps(query, subject, ...)
+    f1 <- factor(subjectHits(olaps),
+                 levels = seq_len(subjectLength(olaps)))
+    splitAsList(mcols(query)[[column]][queryHits(olaps)], f1)
+}
+
+# add gene name information to regions in bed
+regions <- paste(seqnames(targets), start(targets), end(targets), sep=":") %>% 
+  as.data.frame() %>% 
+  separate('.', into = c('discard', 'keep'), sep = 'chr')
+regions <- as.list(regions$keep)
+
+df <- data.frame()
+for (i in regions) {
+  ranges = print(i)
+  x = getBM(attributes = c(
+    "hgnc_symbol", 
+    "chromosome_name", 
+    "start_position", 
+    "end_position"
+    ),
+    filters = "chromosomal_region",
+    values = ranges,
+    mart = hsapiens.anno)
+  x = cbind(ranges, x)
+  df = rbind(x, df)
+}
+df <- df[which(df$hgnc_symbol != ''), c('ranges', 'hgnc_symbol')]
+df <- df %>% separate(ranges, into = c('chr', 'start', 'end'), sep = ':')
+df$chr <- paste0('chr', df$chr)
+
+ann.gr <- makeGRangesFromDataFrame(df, 
+                                   start.field="start",
+                                   end.field="end")
+ann.gr$gene <- df$hgnc_symbol
+
+# find overlaps to keep track of gene names
+annotated_targets = splitByOverlap(ann.gr, targets, "gene")
+L = list()
+for (i in names(annotated_targets)) {
+  if (length(annotated_targets[[i]]) > 1) {
+    x = annotated_targets[[i]][[1]]
+  } else {
+    x = annotated_targets[[i]]
+  }
+  L[[i]] <- x
+}
+gene <- do.call(rbind, L)
+targets$gene <- gene ## targets with gene annotation
+```
+
+# Coverage analysis
+For each sample, we are interested in checking the success of mutation-enrichment in terms of:
+- Capture specificity: fraction of aligned reads that overlap with any target region
+- Coverage
+```{r}
+L_fraction_target <- list()
+L_cov_summary <- list()
+L_cov <- list()
+L_cov_filtered <- list()
+
+for (s in samples_genotype) {
+  
+  # load ONT mutation-enrichment reads (BAM file merging alignment from different flowcells)
+  reads <- 
+    get.reads(
+      readsfile = paste0("/hpcnfs/scratch/PGP/SCMseq/", s, "_promethion/merged_enriched/out_flames_sc_enriched/align2genome.bam"),  # /path/to/bam
+      filetype = "bam"
+      )
+  
+  # filter reads to only include those mapping to human chromosomes
+  reads_filtered = reads[seqnames(reads) %in% chr]
+  seqlevels(reads_filtered) = as.character(unique(seqnames(reads_filtered)))
+
+ # Capture specificity
+ ## Chromosome
+ pdf(paste0(path_results, "plots/", s, "_chrom.barplot.pdf"), width = 7, height = 5)
+ p = chrom.barplot(reads_filtered, targets, main = s)
+ print(p)
+ dev.off()
+
+ ## Targets
+ # Calculate the fraction of reads that align to target regions
+ ft <- fraction.reads.target(reads_filtered, targets, Offset = 0)
+ L_fraction_target[[s]] <- ft
+ 
+ # Coverage
+ coverage <- coverage.target(reads_filtered, targets, perTarget=T, perBase=T)
+ L_cov[[s]] <- coverage
+ 
+ ## save tables
+ ### all targeted bases
+ cov_q <- 
+  data.frame(coverage$targetCoverageQuantiles) %>%
+  rownames_to_column(var = "q") %>%
+  pivot_wider(names_from = 1,
+              values_from = 2) 
+ colnames(cov_q) <- paste0("q", 1:5)
+ cov_summary <-
+   data.frame(
+     sample = s,
+     avgTargetCoverage = coverage$avgTargetCoverage,
+     targetCoverageSD = coverage$targetCoverageSD,
+     cov_q
+     )
+ L_cov_summary[[s]] <- cov_summary
+ 
+ ### targets
+ df_cov <- coverage$targetCoverages # coverage
+ df_cov <- readsPerTarget(reads_filtered, df_cov, Offset = 0) # n reads
+ write_csv(as.data.frame(df_cov), paste0(path_results, "tables/", s, "_target_coverage.csv"))
+ 
+ ## plot 
+ ### all targeted bases
+ pdf(paste0(path_results, "plots/", s, "_coverage_hist.pdf"), width = 7, height = 7)
+ p = coverage.hist(coverage$coverageTarget, 
+              covthreshold = 10, 
+              col.hist = 'lightgrey',
+              main = s)
+ print(p)
+ dev.off()
+ 
+ ### targets
+ sub_target <- 
+    target_mutations %>%
+    filter(
+      Sample == s,
+      `target enrichment` == "yes"
+      )
+ x <- as.data.frame(df_cov) %>%
+   filter(gene %in% unique(sub_target$Gene) & nReads > 0)
+  
+ L_cov_filtered[[s]] <- x
+    
+ ## coverage uniformity
+ pdf(paste0(path_results, "plots/", s, "_coverage_uniformity_hist.pdf"), width = 7, height = 7)
+ p = coverage.uniformity(coverage, main = s)
+ print(p)
+ dev.off()
+
+}
+
+# we also plot coverage at the variant site (with a 300 bp-window; probes are designed with 200 bp-window)
+for (s in samples_genotype) {
+
+ sub_target <- 
+    target_mutations %>%
+    filter(
+      Sample == s,
+      `target enrichment` == "yes"
+      )
+ 
+  x <- L_cov_filtered[[s]]
+  coverage <- L_cov[[s]]$coverageAll
+  
+  for (i in 1:nrow(x)) {
+    gene = x$gene[i]
+    query <- targets[(elementMetadata(targets)[,'gene'] == gene)]
+    q2 <- as.data.frame(query)
+    chr <- unique(q2$seqnames) %>% as.character()
+    Start <- min(q2$start)
+    End <- max(q2$end)
+      
+    # plot range and mutated position
+    pdf(paste0(path_results, "plots/", s, "_", gene, '_coverage.pdf'), height = 5, width = 6)
+    p = coverage.plot(
+      coverage, 
+      query, 
+      Offset = 300, 
+      chr = chr, 
+      Start = Start, 
+      End = End,
+      main = paste0(gene, ":", sub_target[which(sub_target$Gene == gene),8])
+      )
+    abline(v = sub_target[which(sub_target$Gene == gene),4], 
+           col = 'red', lty = 2, lwd = 1.5,
+           add = TRUE)
+    print(p)
+    dev.off()
+      
+  }  
+
+}
+```
+
+# Compare across samples
+To ensure reproducible results, we check the homogeneity of target enrichment across different samples.
+```{r}
+# ont-target fraction
+df_fraction_target <- 
+  do.call(rbind, L_fraction_target) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "sample") %>%
+  rename("on_target" = "V1")
+
+p = ggplot(df_fraction_target, aes(sample, on_target)) +
+  geom_col(width = 0.75) +
+  theme_bw() +
+  ylab("On-target reads (%)") +
+  ylim(0,1) +
+  theme(panel.grid = element_blank(),
+        axis.title.x = element_blank(),
+        aspect.ratio = 1,
+        axis.text = element_text(color = "black", size = 13),
+        axis.title = element_text(color = "black", size = 15))
+
+ggsave(paste0(path_results, "plots/on_target_fraction.png"),
+       p, width = 7, height = 7)
+```
+
+```{r}
+# coverage summary
+
+## table
+df_cov_summary <- do.call(rbind, L_cov_summary)
+write_csv(df_cov_summary, paste0(path_results, "tables/cov_summary.csv"))
+
+## plot
+pdf(paste0(path_results, "plots/coverage_across_samples_norm.pdf"), width = 5, height = 5)
+p = coverage.density(L_cov, 
+                 normalized = T,
+                 col = colors$sample,
+                 legend = samples_genotype, 
+                 lwd = 2)
+print(p)
+dev.off()
+
+# not normalized
+pdf(paste0(path_results, "plots/coverage_across_samples_org.pdf"), width = 5, height = 5)
+p = coverage.density(L_cov, 
+                 normalized = F, 
+                 col = colors$sample, 
+                 legend = samples_genotype,
+                 lwd = 2)
+print(p)
+dev.off()
+```
+
+# Relationship between coverage by target region and corresponding gene expression
+```{r}
+for (s in samples_genotype) {
+  
+  # select target mutations
+  sub_target <- 
+    target_mutations %>%
+    filter(
+      Sample == s,
+      `target enrichment` == "yes"
+      )
+  gene_check <- unique(sub_target$Gene)
+  
+  # get target regions with ONT n reads
+  df_cov <- read_csv(paste0(path_results, "tables/", s, "_target_coverage.csv"))
+  sub_df_cov <- 
+    df_cov %>%
+    filter(gene %in% gene_check)
+  df_ONT <- sub_df_cov[,c("gene", "nReads")] %>%
+    mutate(seq = "ONT")
+  
+  # get target regions with 10x n reads
+  obj <- readRDS(paste0(path_main, "data/final_seurat.rds"))
+  obj <- obj[gene_check, which(obj$sample == s)]
+  count_10x <- as.data.frame(GetAssayData(obj, assay = 'RNA', slot = 'counts'))
+  df_10x <- data.frame(
+    nReads = rowSums(count_10x),
+    gene = rownames(count_10x),
+    seq = "10x"
+    )
+  
+  # merge 10x and ONT reads by target
+  df_merge <- full_join(df_10x, df_ONT)
+  df_merge$seq <- factor(df_merge$seq, levels = c("10x", "ONT"))
+  
+  # plot
+  df_merge_plot <- 
+    df_merge %>%
+    pivot_wider(names_from = seq, values_from = nReads, values_fill = 0) %>%
+    pivot_longer(cols = 2:3, names_to = "seq", values_to = "nReads")
+  df_merge_plot$nReads <- ifelse(df_merge_plot$nReads == 0, 1, df_merge_plot$nReads) # for log transform
+    
+  p = ggplot(df_merge_plot, aes(x = gene, y = nReads, fill = seq)) +
+    geom_col(position = "dodge", color = 'black', width = 0.6) +
+    theme_bw() +
+    scale_fill_manual(name = "Platform", values = c("grey", "navy")) +
+    scale_y_log10() +
+    ylab("N reads (log10)") +
+    ggtitle(s) +
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x = element_text(color = 'black', size = 11, angle = 45, vjust = 1, hjust = 1),
+      axis.title.y = element_text(color = 'black', size = 12),
+      axis.text.y = element_text(color = 'black'),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank()
+      )
+  ggsave(paste0(path_results, "plots/", s, "_n_reads_target_platform.png"),
+         p, width = 7, height = 5)
+  
+  p = count_10x %>% 
+  rownames_to_column(var = 'gene') %>%
+  pivot_longer(cols = 2:ncol(count_10x), names_to = 'cell', values_to = 'expression') %>%
+  ggplot(aes(x = gene, y = expression)) +
+  geom_boxplot(outlier.size = 0.5, outlier.alpha = 0.5) +
+  theme_bw() +
+  scale_x_discrete() +
+  ylab("N reads/cell") +
+  ggtitle(s) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(color = 'black', size = 11, angle = 45, vjust = 1, hjust = 1),
+    axis.title.y = element_text(color = 'black', size = 12),
+    axis.text.y = element_text(color = 'black'),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    legend.position = 'none'
+    )
+  ggsave(paste0(path_results, "plots/", s, "_n_reads_cell_10x.png"),
+         p, width = 7, height = 5)
+  
+  # correlations
+  df_merge_cor <- 
+    left_join(
+      df_merge, 
+      sub_target[,c("Gene", "VAF")], 
+      by = c("gene" = "Gene")
+      ) %>%
+    pivot_wider(
+      names_from = seq, 
+      values_from = nReads, 
+      values_fill = 0
+      )
+  
+  ## 10x vs ONT n reads
+  p = ggscatter(df_merge_cor,
+          x = "10x",
+          y = "ONT",
+          title = s,
+          add = "reg.line",
+          add.params = list(linetype = 2, size = 0.5),
+          cor.coef = TRUE,
+          cor.method = "spearman") +
+    theme_bw() +
+    xlab("10x n reads") +
+    ylab("ONT n reads") +
+  theme(
+    aspect.ratio = 1,
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.title = element_text(color = 'black', size = 12),
+    axis.text = element_text(color = 'black', size = 11)
+    )
+  ggsave(paste0(path_results, "plots/", s, "_10x_ONT_n_reads_spearman.png"),
+         p, width = 7, height = 7)
+  
+  ## 10x n reads vs VAF
+  p = ggscatter(df_merge_cor,
+          x = "10x",
+          y = "VAF",
+          title = s,
+          add = "reg.line",
+          add.params = list(linetype = 2, size = 0.5),
+          cor.coef = TRUE,
+          cor.method = "spearman") +
+    theme_bw() +
+    xlab("10x n reads") +
+    ylab("VAF") +
+    theme(
+      aspect.ratio = 1,
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      axis.title = element_text(color = 'black', size = 12),
+      axis.text = element_text(color = 'black', size = 11)
+      )
+  ggsave(paste0(path_results, "plots/", s, "_10x_n_reads_VAF_spearman.png"),
+         p, width = 7, height = 7)
+}
+```
+
+# Session info
+```{r}
+sesessionInfo()
+```
+
