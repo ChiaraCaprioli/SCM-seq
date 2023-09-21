@@ -1,91 +1,104 @@
 
-#title: "08_genotype_analysis"
-#author: "Chiara_Caprioli"
-#date: "August 15th 2023"
+#title: "Genotype analysis"
+#author: "Chiara Caprioli"
+#date: "September 16th 2023"
 
-## Set up
-# load packages
+### Set up ###########################################
+
+# load libraries
 suppressPackageStartupMessages({
   library(tidyverse)
-  library(readxl)
+  library(patchwork)
+  library(ComplexHeatmap)
   library(Seurat)
-  library(SeuratObject)
+  library(ggpubr)
+  library(readxl)
 })
 
-# other settings
-load(paste0(path_data, "settings.RData"))
-
 # set paths
-path_main <- '/Users/ieo4874/Desktop/working/SCMseq/'
-path_data <- paste0(path_main, 'data/')
-path_results <- paste0(path_main, 'results_and_plots/sc_genotype/')
+path_main <- "/Users/ieo4874/Desktop/working/SCMseq/"
+path_data <- "~/Desktop/temp/data/" # path to final seurat object and result of genotype confidence assignment
+path_results <- "~/Desktop/temp/genotype_analysis/"
+
+# load custom settings
+load(paste0(path_main, "data/settings.RData")) # including samples_genotype, a list of samples for which we currently have mutation analysis 
 
 # load Seurat object 
-final_seurat <- readRDS(paste0(path_data, 'final_seurat.rds'))
+final_seurat <- readRDS(paste0(path_main, "data/final_seurat.rds"))
 
-# load genotype assignment result
-genotype_all_final <- read_csv(paste0(path_results, 'tables/genotype_all_final.csv'))
+# load filtered genotype table
+genotype_all <- read_csv(paste0(path_results, "all_samples/tables/genotype_all.csv"))
 
-## Compute various metrics to correlate WES and SCM-seq
-for (t in unique(genotype_all_final$tier)) {
+### Correlation metrics ###########################################
+
+# We obtain metrics to correlate WES and SCM-seq:
+# - VAF (from WES)
+# - pseudo-bulk VAF (pbVAF): ratio between number of mutated reads and total number of genotyped reads 
+# (defined for each variant across all cells)
+# - mutant cell fraction (MCF): ratio between number of mutated cells and total number of genotyped cells
+# (defined for each variant and each genotyping tier)
+
+for (t in unique(genotype_all$tier)) {
   
   # extract high-confidence variants and cells 
-  tier_genotype_all_final <- genotype_all_final %>%
-    filter(gene_keep == "yes",
+  tier_genotype_all <- 
+    genotype_all %>%
+    filter(var_keep == "yes",
            cell_keep == "yes",
            tier == t) %>% 
-    pivot_longer(cols = c(n_reads_mut, n_reads_wt, mis), 
+    pivot_longer(cols = c(n_reads_mut, n_reads_wt, n_reads_mis), 
                  names_to = 'read_type', values_to = 'n_reads_type')
   
   # pseudo-bulk VAF 
-  df_vaf_scVAF <- list()
+  df_vaf_pbVAF <- list()
   for (s in samples_genotype) {
     
-    dat_ = tier_genotype_all_final %>% 
+    dat_ = tier_genotype_all %>% 
       filter(sample == s)
-    gene = unique(dat_$gene)
+    variant = unique(dat_$variant)
     
     df <- data.frame()
-    for (g in gene) {
+    for (v in variant) {
       
       x = dat_ %>% 
-        filter(gene == g & read_type != 'mis') %>% 
-        dplyr::select(barcode, sample, gene, read_type, n_reads_type) %>%
-        group_by(sample, gene, read_type) %>% 
+        filter(variant == v & read_type != 'n_reads_mis') %>% 
+        dplyr::select(barcode, sample, variant, read_type, n_reads_type) %>%
+        group_by(sample, variant, read_type) %>% 
         summarise(N_tot_reads = sum(n_reads_type))
       
       df = rbind(x, df)
-      df_vaf_scVAF[[s]] <- df 
+      df_vaf_pbVAF[[s]] <- df 
       
     }
   }
   
-  df_vaf_scVAF <- do.call(rbind, df_vaf_scVAF)
+  df_vaf_pbVAF <- do.call(rbind, df_vaf_pbVAF)
   
-  df_vaf_scVAF <- df_vaf_scVAF %>% 
+  df_vaf_pbVAF <- 
+    df_vaf_pbVAF %>% 
     mutate(read_type = recode(read_type, 'mutated'='n_reads_mut', 'wild-type' = 'wt')) %>%
     pivot_wider(names_from = read_type, values_from = N_tot_reads, values_fill = 0)
   
-  colnames(df_vaf_scVAF)[3] <- 'MUT_N_tot_reads'
-  colnames(df_vaf_scVAF)[4] <- 'WT_N_tot_reads'
+  colnames(df_vaf_pbVAF)[3] <- 'MUT_N_tot_reads'
+  colnames(df_vaf_pbVAF)[4] <- 'WT_N_tot_reads'
   
   # Mutant cell fraction (MCF): defined for each variant as the ratio between mutated cells 
   # and total number of genotyped cells
   df_vaf_mcf <- list()
   for (s in samples_genotype) {
     
-    data = tier_genotype_all_final %>% filter(sample == s)
-    gene = unique(data$gene)
+    data = tier_genotype_all %>% filter(sample == s)
+    variant = unique(data$variant)
     
     df <- data.frame()
     
-    for (g in gene) {
+    for (v in variant) {
       
       x = data %>% 
-        filter(gene == g) %>% 
+        filter(variant == v) %>% 
         distinct(barcode, .keep_all=T) %>%
-        dplyr::select(barcode, sample, gene, genotype) %>%
-        group_by(sample, gene, genotype) %>% 
+        dplyr::select(barcode, sample, variant, genotype) %>%
+        group_by(sample, variant, genotype) %>% 
         summarise(count = n())
       x = x %>% mutate(N_tot_cells = data %>% distinct(barcode) %>% nrow())
       
@@ -96,51 +109,57 @@ for (t in unique(genotype_all_final$tier)) {
   }
   
   df_vaf_mcf <- do.call(rbind, df_vaf_mcf)
-  df_vaf_mcf <- df_vaf_mcf %>% 
+  df_vaf_mcf <- 
+    df_vaf_mcf %>% 
     pivot_wider(names_from = genotype, values_from = count, values_fill = 0)
   
   colnames(df_vaf_mcf)[4] <- 'MUT_N_tot_cells'
   colnames(df_vaf_mcf)[5] <- 'WT_N_tot_cells'
   
-  for (i in df_vaf_mcf$gene){
+  for (i in df_vaf_mcf$variant){
     N_cells_UNK = (df_vaf_mcf$N_tot_cells - (df_vaf_mcf$MUT_N_tot_cells + df_vaf_mcf$WT_N_tot_cells))
   }
   
   df_vaf_mcf$N_cells_UNK <- N_cells_UNK
   
-  df_vaf_mcf <- full_join(df_vaf_mcf, df_vaf_scVAF, by = c('sample', 'gene'))
+  df_vaf_mcf <- full_join(df_vaf_mcf, df_vaf_pbVAF, by = c('sample', 'variant'))
   
-  vaf <- read_delim(paste0(path_main, 'clones/WES/mutations_3_AML_VAF.csv'), delim = ';')
-  vaf <- vaf %>% filter(Gene %in% df_vaf_mcf$gene) %>%
-    dplyr::select(Sample, Gene, tumor_f)
-  df_vaf_mcf <- full_join(df_vaf_mcf, vaf, by = c("gene" = "Gene", 'sample' = 'Sample'))
+  # associate WES VAF
+  vaf <- read_delim(paste0(path_data, "mutations_AML_VAF.csv"), delim = ',')
+  vaf <- vaf %>% filter(variant %in% df_vaf_mcf$variant) %>%
+    dplyr::select(sample, variant, VAF)
+  df_vaf_mcf <- full_join(df_vaf_mcf, vaf, by = c("variant", "sample"))
   
-  for (i in df_vaf_mcf$gene){
+  for (i in df_vaf_mcf$variant){
     mcf = df_vaf_mcf$MUT_N_tot_cells/(df_vaf_mcf$MUT_N_tot_cells + df_vaf_mcf$WT_N_tot_cells)
-    scVAF = df_vaf_mcf$MUT_N_tot_reads/(df_vaf_mcf$MUT_N_tot_reads + df_vaf_mcf$WT_N_tot_reads) 
+    pbVAF = df_vaf_mcf$MUT_N_tot_reads/(df_vaf_mcf$MUT_N_tot_reads + df_vaf_mcf$WT_N_tot_reads) 
   }
   
   df_vaf_mcf <- df_vaf_mcf %>%
-    cbind(mcf = mcf, scVAF = scVAF)
+    cbind(mcf = mcf, pbVAF = pbVAF)
   
-  write_csv(df_vaf_mcf, paste0(path_results, "tables/", t, "_df_vaf_mcf.csv"))
+  write_csv(df_vaf_mcf, paste0(path_results, "all_samples/tables/", t, "_df_vaf_mcf.csv"))
 
 }
 
-#Rather than correlating scVAF and MCF to VAF from WES only, we also want to know 
-#the relationship between MCF and the cellular prevalence we can estimate from bulk analysis. 
-#To this end, we run Pyclone on CNV-corrected WES data, only for high-confidence variants.
+### Pyclone ###########################################
 
-### Prepare input to pyclone
+# Rather than just correlating pbVAF and MCF to VAF from WES, we also want to know 
+# the relationship between MCF and the cellular prevalence we can estimate from bulk analysis. 
+# To this end, we run Pyclone on CNV-corrected WES data, only for high-confidence variants.
 
-for (t in unique(genotype_all_final$tier)) {
+# Prepare input to pyclone
+for (t in unique(genotype_all$tier)) {
   for (s in samples_genotype) {
     
-    file <- list.files(paste0(path_main, 'clones/WES/CNV_ASCAT'), pattern = s) 
-    CNV <- read_delim(paste0(path_main, 'clones/WES/CNV_ASCAT/', file))
+    # get cnv data
+    file <- list.files(paste0(path_main, 'clones/ascat/', s, "_D_vs_", s, "_N/"), 
+                       pattern = paste0(s, "_D_vs_", s, "_N.cnvs.txt")) 
+    CNV <- read_delim(paste0(path_main, "clones/ascat/", s, "_D_vs_", s, "_N/", file))
     CNV$normal_cn <- rep(2, nrow(CNV))
     
-    patient.metadata <- read_delim(paste0(path_data, "patient_metadata.tsv")) %>% filter(Sample == s)
+    # get sex information and change normal cn of chrX accordingly
+    patient.metadata <- read_delim(paste0(path_main, "data/patient_metadata.tsv")) %>% filter(Sample == s)
     
     if (patient.metadata$Sex == "M") {
       CNV$normal_cn[which(CNV$chr == 'X')] <- 1
@@ -148,9 +167,10 @@ for (t in unique(genotype_all_final$tier)) {
       CNV <- CNV
     }
     
-    var_ <- read_csv(paste0(path_results, 'tables/genotype_all_final.csv')) %>%
-      filter(sample == s, gene_keep == "yes", tier == t) %>%
-      pull(gene) %>% unique()
+    # map variants from WES to CNV data 
+    var_ <- read_csv(paste0(path_results, "all_samples/tables/genotype_all.csv")) %>%
+      filter(sample == s, var_keep == "yes", tier == t) %>%
+      pull(variant) %>% unique()
     
     file_var <- paste0(path_main, 'clones/WES/old/WES_to_SCMseq.xlsx')
     sheets <- excel_sheets(file_var)
@@ -167,7 +187,9 @@ for (t in unique(genotype_all_final$tier)) {
       sample_WES$Hugo_Symbol %in% var_),
       c("Hugo_Symbol", "Chromosome", "Start_Position", "End_Position", "t_alt_count", "t_ref_count")]
     
-    sample_WES <- sample_WES %>% separate(Chromosome, into = c('stuff', 'chr'), sep = 'chr') %>% dplyr::select(-'stuff')
+    sample_WES <- sample_WES %>% 
+      separate(Chromosome, into = c('stuff', 'chr'), sep = 'chr') %>% 
+      dplyr::select(-'stuff')
     x <- left_join(sample_WES, CNV,  by = 'chr', multiple = "all")
     
     pyclone_tsv <- data.frame()
@@ -182,10 +204,10 @@ for (t in unique(genotype_all_final$tier)) {
     
     pyclone_tsv <- pyclone_tsv %>%
       unite('mutation_id', 1:4, sep = ':', remove = T) %>%
-      rename('nMinor' = 'minor_cn',
-             'nMajor' = 'major_cn',
-             't_ref_count' = 'ref_counts',
-             't_alt_count' = 'var_counts') %>%
+      rename('minor_cn' = 'nMinor',
+             'major_cn' = 'nMajor',
+             'ref_counts' = 't_ref_count',
+             'var_counts' = 't_alt_count') %>%
       dplyr::select(-c(startpos, endpos))
     
     write_tsv(pyclone_tsv, paste0(path_main, 'clones/WES/pyclone_expressed_var/', s, "_", t, '_pyclone_input.tsv'))
@@ -193,23 +215,24 @@ for (t in unique(genotype_all_final$tier)) {
   } 
 }
 
-# run pyclone
-## note that we set tumour_contents = 1, to avoid that the computation of cellular prevalence 
-## gets affected by blast percentage. This allows a more faithful comparison to SCM-seq results, 
-## which did not consider tumor vs non tumor composition so far.
+# Run pyclone
 
-#PyClone run_analysis_pipeline --in_files /Users/ieo4874/Desktop/working/SCMseq/clones/WES/pyclone_expressed_var/AML4_Tier1_pyclone_input.tsv \
-#--working_dir /Users/ieo4874/Desktop/working/SCMseq/clones/WES/pyclone_expressed_var/AML4/Tier1 \
-#--samples AML4 --tumour_contents 1 --num_iters 10000 --burnin 1000 
+## note that we set tumour_contents = 1, to avoid the effect of blast percentage while
+## computing cellular prevalence 
+## This allows a more faithful comparison to SCM-seq results, 
+## which for now does not consider tumor vs non tumor composition.
 
-### Update VAF with CNV-corrected data for all mutations scored by SCMseq
-# process pyclone output
+# PyClone run_analysis_pipeline --in_files /path/to/sample_tier_pyclone_input.tsv \
+# --working_dir /path/to/sample/tier \
+# --samples <sample> --tumour_contents 1 --num_iters 10000 --burnin 1000 
 
-for (t in unique(genotype_all_final$tier)) {
+# Update VAF with CNV-corrected data for all mutations scored by SCMseq 
+
+for (t in unique(genotype_all$tier)) {
   pyclone_out_all <- list()
   for (s in samples_genotype) {
     pyclone_out <- read_delim(paste0(path_main, 'clones/WES/pyclone_expressed_var/', s, "/", t, '/tables/loci.tsv')) %>%
-      separate(mutation_id, into = c('gene', 'chr', 'stuff'), sep = ':', remove = F, extra = 'merge') %>%
+      separate(mutation_id, into = c('variant', 'chr', 'stuff'), sep = ':', remove = F, extra = 'merge') %>%
       dplyr::select(-'stuff')
     pyclone_out$sample <- s
     pyclone_out$cnv_corrected_vaf <- ifelse(pyclone_out$chr != 'X', 
@@ -219,30 +242,31 @@ for (t in unique(genotype_all_final$tier)) {
   
   pyclone_out_all <- do.call(rbind, pyclone_out_all) 
   pyclone_out_all <- pyclone_out_all %>% 
-    dplyr::select(gene, sample_id, cellular_prevalence, cnv_corrected_vaf, variant_allele_frequency)
+    dplyr::select(variant, sample_id, cellular_prevalence, cnv_corrected_vaf, variant_allele_frequency)
   
-  df_vaf_mcf <- read_csv(paste0(path_results, "tables/", t, "_df_vaf_mcf.csv"))
+  df_vaf_mcf <- read_csv(paste0(path_results, "all_samples/tables/", t, "_df_vaf_mcf.csv"))
 
-  df_vaf_mcf <- full_join(df_vaf_mcf, pyclone_out_all, by = c('gene', 'sample'='sample_id') )
+  df_vaf_mcf <- full_join(df_vaf_mcf, pyclone_out_all, by = c('variant', 'sample'='sample_id') )
   
-  write_csv(df_vaf_mcf, paste0(path_results, "tables/", t, "_df_vaf_mcf.csv"))
+  write_csv(df_vaf_mcf, paste0(path_results, "all_samples/tables/", t, "_df_vaf_mcf.csv"))
   
 }
 
-## Correlation WES-to-SCMseq
+### Correlation WES-to-SCMseq ###########################################
 
-for (t in unique(genotype_all_final$tier)) {
+# For the metrics of interest between single-cell and bulk data, 
+# we compute Spearman correlation and fit a linear model 
+# using all variants from all samples.
+
+for (t in unique(genotype_all$tier)) {
   
-  df_vaf_mcf <- read_csv(paste0(path_results, "tables/", t, "_df_vaf_mcf.csv"))
+  df_vaf_mcf <- read_csv(paste0(path_results, "all_samples/tables/", t, "_df_vaf_mcf.csv"))
   
-  # cellular prevalence
-  cor_test_cp <- cor.test(df_vaf_mcf$mcf, df_vaf_mcf$cellular_prevalence, use = "everything", method = "spearman")
-  
-  # VAF (non CNV-corrected)
-  cor_test_vaf <- cor.test(df_vaf_mcf$mcf, df_vaf_mcf$tumor_f, use = "everything", method = "spearman")
-  
-  # VAF (CNV-corrected)
-  cor_test_vaf_corrected <- cor.test(df_vaf_mcf$mcf, df_vaf_mcf$cnv_corrected_vaf, use = "everything", method = "spearman")
+  # MCF vs cellular prevalence
+  cor_test_cp <- cor.test(df_vaf_mcf$mcf, 
+                          df_vaf_mcf$cellular_prevalence, 
+                          use = "everything", 
+                          method = "spearman")
   
   p1 <- ggplot(df_vaf_mcf, aes(mcf, cellular_prevalence)) +
     geom_point() +
@@ -266,9 +290,15 @@ for (t in unique(genotype_all_final$tier)) {
           plot.subtitle = element_text(size = 17, hjust = 0.5),
           plot.margin = margin(t = 0, r = 10, b = 0, l = 10, unit = "pt"))
   
-  ggsave(paste0(path_results, "plots/", t, "_cor_MCF_CP.png"), p1, height = 5, width = 5)
+  ggsave(paste0(path_results, "all_samples/plots/", t, "_cor_MCF_CP.png"), p1, height = 5, width = 5)
   
-  p2 <- ggplot(df_vaf_mcf, aes(mcf, tumor_f)) +
+  # MCF vs VAF (non CNV-corrected)
+  cor_test_vaf <- cor.test(df_vaf_mcf$mcf, 
+                           df_vaf_mcf$VAF, 
+                           use = "everything", 
+                           method = "spearman")
+  
+  p2 <- ggplot(df_vaf_mcf, aes(mcf, VAF)) +
     geom_point() +
     geom_smooth(method = 'lm', se = F, linewidth = 0.5) +
     xlim(0,1) + ylim(0,1) +
@@ -290,7 +320,13 @@ for (t in unique(genotype_all_final$tier)) {
           plot.subtitle = element_text(size = 17, hjust = 0.5),
           plot.margin = margin(t = 0, r = 10, b = 0, l = 10, unit = "pt"))
   
-  ggsave(paste0(path_results, "plots/", t, "cor_MCF_VAF.png"), p2, height = 5, width = 5)
+  ggsave(paste0(path_results, "all_samples/plots/", t, "cor_MCF_VAF.png"), p2, height = 5, width = 5)
+  
+  # MCF vs VAF (CNV-corrected)
+  cor_test_vaf_corrected <- cor.test(df_vaf_mcf$mcf, 
+                                     df_vaf_mcf$cnv_corrected_vaf, 
+                                     use = "everything", 
+                                     method = "spearman")
   
   p3 <- ggplot(df_vaf_mcf, aes(mcf, cnv_corrected_vaf)) +
     geom_point() +
@@ -314,30 +350,70 @@ for (t in unique(genotype_all_final$tier)) {
           plot.subtitle = element_text(size = 17, hjust = 0.5),
           plot.margin = margin(t = 0, r = 10, b = 0, l = 10, unit = "pt"))
   
-  ggsave(paste0(path_results, "plots/", t, "cor_MCF_VAF_corrected.png"), p3, height = 5, width = 5)
+  ggsave(paste0(path_results, "all_samples/plots/", t, "cor_MCF_VAF_corrected.png"), p3, height = 5, width = 5)
+  
+  # MCF vs pbVAF
+  cor_test_vaf_pbvaf <- cor.test(df_vaf_mcf$mcf, 
+                                     df_vaf_mcf$pbVAF, 
+                                     use = "everything", 
+                                     method = "spearman")
+  
+  p4 <- ggplot(df_vaf_mcf, aes(mcf, pbVAF)) +
+    geom_point() +
+    geom_smooth(method = 'lm', se = F, linewidth = 0.5) +
+    xlim(0,1) + ylim(0,1) +
+    labs(x = 'Mutant cell fraction (SCM-seq)', 
+         y = 'Pseudo-bulk VAF (SCM-seq)') +
+    annotate(geom = 'text',
+             label = paste0('Spearman rho = ', round(cor_test_vaf_pbvaf$estimate, digits = 2), 
+                            ", p = ", round(cor_test_vaf_pbvaf$p.value, digits = 3)), 
+             x = 0.3, y = 0.9,
+             size = 4) +
+    theme_bw() +
+    coord_equal() +
+    theme(panel.grid = element_blank(),
+          aspect.ratio = 1,
+          axis.text = element_text(size = 13),
+          axis.title = element_text(size = 16),
+          legend.text = element_text(size = 16),
+          legend.title = element_text(size = 16),
+          plot.subtitle = element_text(size = 17, hjust = 0.5),
+          plot.margin = margin(t = 0, r = 10, b = 0, l = 10, unit = "pt"))
+  
+  ggsave(paste0(path_results, "all_samples/plots/", t, "cor_MCF_pbVAF.png"), p4, height = 5, width = 5)
   
 }
 
-## Count cells by completeness of genotype information
+### Genotype combinations and mutation burden ###########################################
+
+# We want to score unique genotype combinations (i.e., "clones"),
+# along with completeness of each combination 
+# (i.e., fraction of known genotypes across all variants for each cell)
+# and mutation burden (number of mutations per cell).
 
 df_tier <- list()
-for (t in unique(genotype_all_final$tier)) {
+for (t in unique(genotype_all$tier)) {
   df_sample <- list()
   for (s in samples_genotype) {
     
-    selected_var <- genotype_all_final %>%
+    selected_var <- genotype_all %>%
       filter(sample == s, 
-             gene_keep == "yes", 
+             var_keep == "yes", 
              cell_keep == "yes",
              tier == t) %>%
-      dplyr::select(barcode, gene, genotype, aggregated_lineage2) %>%
+      dplyr::select(barcode, variant, genotype, aggregated_lineage2) %>%
       mutate(genotype = recode(genotype,
                                'mutated' = 1,
                                'wild-type' = 0))
     
-    p1 <- selected_var %>%
-      ggplot(aes(x = gene)) +
-      geom_histogram(stat="count", width = 0.75) +
+    # Plot variants by number of genotyped cells
+    count_var <- as.data.frame(table(selected_var$variant)) %>%
+      arrange(desc(Freq))
+    count_var$Var1 <- factor(count_var$Var1, levels = count_var$Var1)
+    
+    p1 <- count_var %>%
+      ggplot(aes(x = Var1, y = Freq)) +
+      geom_col(width = 0.75) +
       theme_bw() +
       ggtitle(s) +
       ylab('N genotyped cells') +
@@ -345,18 +421,20 @@ for (t in unique(genotype_all_final$tier)) {
             axis.title.x = element_blank(),
             panel.grid = element_blank())
     
-    ggsave(paste0(path_results, "plots/", s, "_", t, "_n_genotyped_cells.png"), p1, width = 6, height = 5)
+    ggsave(paste0(path_results, s, "/plots/", t, "_n_genotyped_cells.png"), p1, width = 6, height = 5)
     
+    # Total n variants/cell and completeness of genotype information
     selected_var <- selected_var %>%
-      pivot_wider(names_from = gene, values_from = genotype, values_fn = mean) %>%
+      pivot_wider(names_from = variant, values_from = genotype, values_fn = mean) %>%
       column_to_rownames(var = 'barcode')
     selected_var[is.na(selected_var)] <- 2
     selected_var <- selected_var %>%
       mutate(
-        percent_known = rowSums(selected_var != 2)/ncol(selected_var),
+        percent_known = rowSums(selected_var != 2)/ncol(selected_var), # fraction of variants with valid genotype
         n_mut = apply(selected_var == 1, 1, sum)
       )
     
+    # Categorize N variants per cell into discrete bins
     selected_var <- selected_var %>% 
       mutate(
         n_mut_bin = case_when(
@@ -369,7 +447,7 @@ for (t in unique(genotype_all_final$tier)) {
         tier = t,
         sample = s)
     
-    # add frequency of "clones"
+    # Add frequency of "clones" (identified by unique genotype combinations, including missing data)
     x <- selected_var %>%
       dplyr::select(-c(percent_known, n_mut, n_mut_bin, tier, sample, aggregated_lineage2)) %>%
       table() %>%
@@ -384,8 +462,9 @@ for (t in unique(genotype_all_final$tier)) {
     
     df_sample[[s]] <- selected_var[,c("barcode", "percent_known", "n_mut", "n_mut_bin", "tier", "sample")]
     
-    write_csv(selected_var, paste0(path_results, "tables/", s, "_", t, "_clones.csv"))
+    write_csv(selected_var, paste0(path_results, s, "/tables/", t, "_clones.csv"))
     
+    # plot cell counts by fraction of known genotypes
     tab_known <- table(selected_var$percent_known) %>% as.data.frame() %>% mutate(sample = s)
     colnames(tab_known) <- c("percent_known", "n_cells", "sample")
     tab_known$percent_known <- as.numeric(as.character(tab_known$percent_known))
@@ -400,49 +479,50 @@ for (t in unique(genotype_all_final$tier)) {
       geom_text(data = tab_known, nudge_y = 15) +
       theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2),
             panel.grid = element_blank())
-    ggsave(paste0(path_results, "plots/", s, "_", t, "_fraction_genotyped_cells.png"), p2, width = 6, height = 5)
+    ggsave(paste0(path_results, s, "/plots/", t, "_fraction_genotyped_cells.png"), p2, width = 6, height = 5)
   }
   df_tier[[t]] <- do.call(rbind, df_sample)
 }
 
-
+# Transfer genotype completeness information to genotype table
 df_counts <- do.call(rbind, df_tier)
 
-genotype_all_final <- full_join(genotype_all_final, df_counts, by = c("barcode", "sample", "tier"))
-write_csv(genotype_all_final, paste0(path_results, "tables/genotype_all_final.csv"))
+genotype_all <- full_join(genotype_all, df_counts, by = c("barcode", "sample", "tier"))
+write_csv(genotype_all, paste0(path_results, "all_samples/tables/genotype_all.csv"))
 
-###########
+### Summary statistics ###########################################
 
-## Summarize counts
+# Cells from 10x dataset after QC, n
+n_cells_sample <- 
+  table(final_seurat$sample[which(final_seurat$sample %in% samples_genotype)]) %>%
+  as.data.frame(responseName = "n_cells_sample") %>%
+  rename("sample" = "Var1")
 
-#Cells from 10x dataset after QC, n
-table(final_seurat$sample)
-
-for (t in unique(genotype_all_final$tier)) {
+for (t in unique(genotype_all$tier)) {
   
-  #Genotyped cells, n 
-  a <- genotype_all_final %>%
+  # Genotyped cells, n 
+  a <- genotype_all %>%
     filter(cell_keep == "yes" & 
-             gene_keep == "yes" &
+             var_keep == "yes" &
              tier == t) %>%
     distinct(barcode, .keep_all = T) %>%
     group_by(sample) %>%
     summarise(n_genotyped_cells = n())
   
-  #Total mutant cells (over genotyped cells)
-  b <- genotype_all_final %>%
+  # Total mutant cells (over genotyped cells)
+  b <- genotype_all %>%
     filter(cell_keep == "yes" & 
-             gene_keep == "yes" & 
+             var_keep == "yes" & 
              tier == t) %>%
     distinct(barcode, .keep_all = T) %>%
     group_by(sample, genotype) %>%
     summarise(tot_mutant_cells = n()) %>%
     pivot_wider(names_from = genotype, values_from = tot_mutant_cells)
   
-  #Mutations per cell, median (range)
-  c <- genotype_all_final %>%
+  # Mutations per cell, median (range)
+  c <- genotype_all %>%
     filter(cell_keep == "yes" & 
-             gene_keep == "yes" & 
+             var_keep == "yes" & 
              tier == t) %>%
     distinct(barcode, .keep_all = T) %>%
     group_by(sample) %>%
@@ -450,12 +530,12 @@ for (t in unique(genotype_all_final$tier)) {
               min_n_mut = min(n_mut),
               max_n_mut = max(n_mut)) 
   
-  #Mutant and wild-type cells per variant, median (range)
-  d <- genotype_all_final %>%
+  # Mutant and wild-type cells per variant, median (range)
+  d <- genotype_all %>%
     filter(cell_keep == "yes" & 
-             gene_keep == "yes" &
+             var_keep == "yes" &
              tier == t) %>%
-    group_by(sample, gene, genotype) %>%
+    group_by(sample, variant, genotype) %>%
     summarise(n_cells = n())
   d <- d %>%
     group_by(sample, genotype) %>%
@@ -464,14 +544,14 @@ for (t in unique(genotype_all_final$tier)) {
               max_n_cells_variant = max(n_cells)) %>%
     pivot_wider(names_from = genotype, values_from = c(median_variant, min_n_cells_variant, max_n_cells_variant))
   
-  final_tab <- Reduce(full_join, list(a,b,c,d))
+  final_tab <- Reduce(full_join, list(n_cells_sample, a,b,c,d))
   
-  write_csv(final_tab, paste0(path_results, "tables/", t, "_summary.csv"))
+  write_csv(final_tab, paste0(path_results, "all_samples/tables/", t, "_summary.csv"))
   
   ## pie chart
-  genotype_all_final <- read_csv("~/Desktop/working/SCMseq/results_and_plots/sc_genotype/tables/genotype_all_final.csv")
+  genotype_all <- read_csv(paste0(path_results, "all_samples/tables/genotype_all.csv"))
   
-  dat_ <- genotype_all_final %>%
+  dat_ <- genotype_all %>%
     filter(cell_keep == "yes", 
            n_mut_bin != 0,
            tier == t) %>%
@@ -486,7 +566,7 @@ for (t in unique(genotype_all_final$tier)) {
   cols <- c("#FFEDA0", "#FD8D3C", "#E31A1C", "#800026")
   
   # pie
-  pdf(paste0(path_results, "plots/", t, "_pie_n_mutations.pdf"), width = 8, height = 10)
+  pdf(paste0(path_results, "all_samples/plots/", t, "_pie_n_mutations.pdf"), width = 8, height = 10)
   
   pie(dat_$Freq, labels = c('1', '2', '3', '>3'), radius = 0.8, 
       clockwise = T, col = cols, border = T, cex = 2) 
@@ -496,13 +576,13 @@ for (t in unique(genotype_all_final$tier)) {
   
 }
 
-# Transfer Tier2 to seurat object
+# Transfer genotype completeness information to seurat object (Tier2)
 geno_data_all <- list()
 for (s in samples_genotype) {
-  geno_data <- genotype_all_final %>% 
+  geno_data <- genotype_all %>% 
     filter(sample == s,
            tier == "Tier2",
-           gene_keep == "yes",
+           var_keep == "yes",
            cell_keep == "yes") %>% 
     mutate(barcode = paste0(barcode, '-', s)) %>%
     dplyr::select(c(barcode, sample, percent_known, n_mut, n_mut_bin)) %>%
@@ -520,7 +600,8 @@ final_seurat$n_mut_bin <- factor(final_seurat$n_mut_bin, levels = c("0", "1", "2
 
 saveRDS(final_seurat, paste0(path_data, "final_seurat.rds"))
 
-DimPlot(final_seurat[,which(!is.na(final_seurat$n_mut_bin))], 
+# Plot UMAP of mutation burden
+p = DimPlot(final_seurat[,which(!is.na(final_seurat$n_mut_bin))], 
         reduction = 'umap', 
         group.by = "n_mut_bin", 
         na.value = "NA", 
@@ -540,5 +621,6 @@ DimPlot(final_seurat[,which(!is.na(final_seurat$n_mut_bin))],
         legend.box.spacing = unit(5, "pt"),
         plot.margin = unit(c(1,0.2,0.2,0.2), "cm")
   )
-ggsave(paste0(path_results, "plots/umap_nmut_bin.png"), width = 6, height = 5)
+
+ggsave(paste0(path_results, "all_samples/plots/umap_nmut_bin.png"), p, width = 6, height = 5)
 
