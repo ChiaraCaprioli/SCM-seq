@@ -1,0 +1,1200 @@
+---
+title: "03_data_integration"
+author: "Chiara Caprioli"
+date: "April 6th 2023"
+output:
+  html_document:
+    code_folding: hide
+---
+
+**Aims:**
+1. compute batch/sample-aware hypervariable features and PC
+2. check sources of variation before and after scaling
+3. batch correction by Harmony
+4. batch correction by Scanorama
+5. check integrated dataset
+
+## Set up
+```{r, setup, include=FALSE}
+# set working directory
+knitr::opts_knit$set(root.dir = '/Users/ieo4874/Desktop/working/SCMseq/')
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, echo=F, message=F, warning=F}
+#load packages
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(Seurat)
+  library(harmony)
+  library(patchwork)
+  library(viridis)
+  library(SeuratObject)
+  library(scater)
+  library(kBET)
+})
+```
+
+```{r}
+# set paths
+path_main <- '/Users/ieo4874/Desktop/working/SCMseq/'
+path_data <- paste0(path_main, 'data/')
+path_results <- paste0(path_main, 'results_and_plots/integration_diagnostics/')
+```
+
+## Load Seurat object with celltype metadata
+*Samples merged in single object
+*Log normalized according to Seurat
+```{r}
+merged_mapped_log <- readRDS(paste0(path_data, 'merged_mapped_log.rds'))
+```
+
+```{r}
+# # samples
+# samples <- c('AML4', 'AML5', 'AML6', 'sAML1',
+#              'AML2', 'AML3', 'sAML16',
+#              'hBM1', 'hBM2', 'hBM3')
+
+# # samples for which sc genotype exists
+# samples_genotype <- c('AML4', 'AML5', 'sAML1')
+
+# #set colors 
+# colors <- list()
+
+# colors$sample <- setNames(
+#   c("#FFEDA0", "#FEB24C", "#FC4E2A", "#BD0026", 
+#     "#66C2A5", "#3288BD", "#5E4FA2", 
+#     "#BDBDBD", "#737373", "#252525"),  
+#   samples
+# )
+
+# colors$cohort <- setNames(
+#   c("#FF9932FF", "#405D61FF", '#F0F0F0'),
+#   c("SRSF2mut", "SRSF2wt", 'hBM')
+# )
+
+# colors$cell_cycle <- setNames(
+#   c("#45aaf2", "#f1c40f", "#e74c3c"),
+#   c("G1", "S", "G2M")
+# )
+
+# colors$discrete <- c(
+#   '#046C9AFF', '#D69C4EFF', '#899DA4FF', '#C93312FF', '#D8B70AFF',
+#   '#02401BFF', '#A2A475FF', '#81A88DFF', '#972D15FF', '#CADDE1FF',
+#   '#7B906FFF', '#174D79FF',  '#898989FF', '#D4CDB1FF', '#708090FF',
+#   '#6CA9C3FF', '#3A3533FF', '#000E33FF', '#800000FF',  '#175E78FF')
+
+# colors$genotype <- setNames(
+#   c('darkred', 'steelblue', 'lightgrey'),
+#   c('mutated', 'wild-type', 'mismatch'))
+
+# colors$col_keep <- setNames(
+#   c("#FEB24C", "#525252"),
+#   c('included', 'discarded'))
+
+# # set lineage colors
+# my_pal <- c(
+#   paletteer::paletteer_d("nationalparkcolors::Denali"),
+#   paletteer:: paletteer_d("nationalparkcolors::Badlands"),
+#   paletteer::paletteer_d("nationalparkcolors::GreatBasin"), 
+#   paletteer::paletteer_d("nationalparkcolors::Arches"), 
+#   paletteer:: paletteer_d("nationalparkcolors::MtMckinley"),
+#   paletteer:: paletteer_d("nationalparkcolors::CraterLake"),
+#   paletteer:: paletteer_d("nationalparkcolors::ArcticGates"),
+#   paletteer:: paletteer_d("nationalparkcolors::Yellowstone")
+# )
+
+# colors$lineage <- setNames(
+#   my_pal,
+#   levels(merged_mapped_log$lineage)
+# )
+
+# colors$aggregated_lineage1 <- setNames(
+#   c("#FED976", '#FD8D3C','darkred', "#238443", '#174D79FF', '#CADDE1FF', "grey", "#000E33FF"),
+#   levels(merged_mapped_log$aggregated_lineage1)
+# )
+
+# colors$aggregated_lineage2 <- setNames(
+#   c("#FED976", '#FD8D3C','darkred', 
+#     "#3A5836FF", "#8073AC",
+#     "#DFC27D", "#DBA662FF", "#80CDC1",
+#     '#174D79FF', '#CADDE1FF', 
+#     "#F7ECD8FF", "grey", 
+#     "#000E33FF"),
+#   levels(merged_mapped_log$aggregated_lineage2)
+# )
+
+# save(samples, samples_genotype, colors, file = paste0(path_data, "settings.RData"))
+```
+
+```{r}
+load(paste0(path_data, "settings.RData"))
+```
+
+## Hypervariable genes
+### option 1: HVG by merged dataset
+Note that this way HVGs might get affected by batch imbalance
+```{r}
+#merged_mapped_log <- FindVariableFeatures(merged_mapped_log, selection.method = "vst", nfeatures = 2000)
+```
+
+### option 2: HVG that are repeatedly variable across samples
+```{r}
+# split the dataset into a list of seurat objects 
+datasets <- SplitObject(merged_mapped_log, split.by = "sample")
+
+# normalize and identify variable features for each dataset independently
+datasets <- lapply(X = datasets, FUN = function(x) {
+    x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration
+genelist <- SelectIntegrationFeatures(object.list = datasets, nfeatures = 2000)
+
+# assign as HVG to merged seurat object
+VariableFeatures(merged_mapped_log) <- genelist
+```
+
+## Check sources of variation by PCs
+```{r}
+# UNSCALED
+# explore explanatory variables by PCs 
+sce <- as.SingleCellExperiment(merged_mapped_log)
+hvg <- VariableFeatures(merged_mapped_log)
+sce <- sce[hvg,]
+
+sce@colData$lineage <- as.character(sce@colData$lineage)
+
+# run PCA on unscaled matrix 
+sce <- scater::runPCA(sce, exprs_values = "logcounts",
+                      ncomponents = 50, ntop = 2000, scale = F)
+
+var <- c("nCount_RNA", "nFeature_RNA", "sample", "seq_run", "percent_MT", "cell_cycle_seurat", "cohort", "lineage")
+
+p <- scater::plotExplanatoryVariables(sce,
+                         exprs_values = "logcounts",
+                         variables = var) +
+  theme_bw() +
+  scale_color_manual(name = 'variable', values = colors$discrete) +
+  theme(panel.grid = element_blank())
+
+ggsave(paste0(path_results, 'plots/explanatory_var_PC_HVG.png'), p, width = 6, height = 5)
+
+x <- getExplanatoryPCs(sce, dimred = "PCA", n_dimred = 50, variables = var) %>% as.data.frame()
+x <- x %>%
+  rownames_to_column(var = 'PC') 
+x <- x %>% pivot_longer(cols = 2:ncol(x), names_to = 'variable', values_to = 'perc_var_explained') 
+
+x$PC <- factor(x$PC, levels = unique(x$PC))
+x$variable <- factor(x$variable, levels = c("cell_cycle_seurat", "nCount_RNA", 
+                                            "nFeature_RNA", "percent_MT", 
+                                            "sample", "seq_run", "cohort", "lineage"))
+
+ggplot(x, aes(x = PC, y = perc_var_explained, group = variable, color = variable)) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  scale_x_discrete(breaks = c('PC1', 'PC10', 'PC20', 'PC30', 'PC40', 'PC50')) +
+  scale_y_log10() +
+  ylab('% variance explained (log10)') +
+  scale_color_manual(values = colors$discrete) +
+  theme(panel.grid = element_blank(),
+        legend.title = element_blank())
+
+ggsave(paste0(path_results, 'plots/explanatory_PC_HVG.png'), width = 7, height = 5)
+```
+
+## Scale and regress unwanted sources of variation
+```{r}
+merged_seurat <- ScaleData(object = merged_mapped_log,
+                           features = genelist, #variable features by default
+                           vars.to.regress = c('percent_MT', 'nCount_RNA'))
+```
+
+## Principal component analysis
+```{r}
+merged_seurat <- RunPCA(merged_seurat, npcs = 50, seed.use = 42) # on HVG by default
+
+saveRDS(merged_seurat, paste0(path_data, 'merged_seurat_logcounts.rds'))
+```
+
+## Check and set number of PCs
+### Heuristic method
+```{r, include=TRUE, warning=FALSE, message=FALSE, out.width="50%"}
+ElbowPlot(merged_seurat, ndims = 50, reduction = 'pca') +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+ggsave(paste0(path_results, "plots/elbow_plot_log.png"), width=6, height=6)
+```
+
+## Check PCs after scaling
+```{r}
+# SCALED
+# explore explanatory variables by PCs 
+sce <- as.SingleCellExperiment(merged_seurat)
+hvg <- VariableFeatures(merged_seurat)
+sce <- sce[hvg,]
+sce@colData$lineage <- as.character(sce@colData$lineage)
+
+p <- scater::plotExplanatoryVariables(sce,
+                         exprs_values = "logcounts",
+                         variables = var) +
+  theme_bw() +
+  scale_color_manual(name = 'variable', values = colors$discrete) +
+  theme(panel.grid = element_blank())
+
+ggsave(paste0(path_results, 'plots/explanatory_var_PC_HVG_scaled.png'), p, width = 6, height = 5)
+
+x <- getExplanatoryPCs(sce, dimred = "PCA", n_dimred = 50, variables = var) %>% as.data.frame()
+x <- x %>%
+  rownames_to_column(var = 'PC') 
+x <- x %>% pivot_longer(cols = 2:ncol(x), names_to = 'variable', values_to = 'perc_var_explained') 
+
+x$PC <- factor(x$PC, levels = unique(x$PC))
+x$variable <- factor(x$variable, levels = c("cell_cycle_seurat", "nCount_RNA", 
+                                            "nFeature_RNA", "percent_MT", 
+                                            "sample", "seq_run", "cohort", "lineage"))
+
+ggplot(x, aes(x = PC, y = perc_var_explained, group = variable, color = variable)) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  scale_x_discrete(breaks = c('PC1', 'PC10', 'PC20', 'PC30', 'PC40', 'PC50')) +
+  scale_y_log10() +
+  xlab("PC1-50") +
+  ylab('% variance explained (log10)') +
+  scale_color_manual(values = colors$discrete) +
+  theme(panel.grid = element_blank(),
+        legend.title = element_blank())
+
+ggsave(paste0(path_results, 'plots/explanatory_PC_HVG_scaled.png'), width = 7, height = 5)
+```
+
+## Check need for integration by kBET
+kBET measures whether batches are well-mixed in the local neighborhood of each cell (null hypothesis).
+The result of kBET is the average test rejection rate (the average percent of cells with kBET p-values < 0.5, i.e. the null hypothesis is rejected). The lower the test result, the less bias is introduced by the batch effect.
+```{r}
+# prepare data: a matrix (rows: samples, columns: features (genes))
+data <- t(as.matrix(assay(sce))) # dense matrix
+
+# prepare batch: vector or factor with batch label of each cell 
+batch <- sce$seq_run
+#batch <- sce$sample
+
+# subsample
+subset_size <- 0.1 #subsample to 10% of the data
+subset_id <- sample.int(n = length(batch), size = floor(subset_size * length(batch)), replace=FALSE)
+batch.estimate <- kBET(seuratObj@reductions$pca@cell.embeddings[subset_id,1:50],
+                       batch[subset_id],
+                       n_repeat = 100,
+                       heuristic = T,
+                       do.pca = F,
+                       verbose = T,
+                       plot = FALSE)
+
+plot.data <- data.frame(class=rep(c('observed', 'expected'), 
+                                  each=length(batch.estimate$stats$kBET.observed)), 
+                        data =  c(batch.estimate$stats$kBET.observed,
+                                  batch.estimate$stats$kBET.expected))
+g <- ggplot(plot.data, aes(class, data)) + geom_boxplot() + 
+  labs(x='Test', y='Rejection rate',title='kBET test results') +
+  theme_bw() +  
+  scale_y_continuous(limits=c(0,1))
+g
+```
+
+## Integration by Harmony
+```{r}
+final_seurat <- RunHarmony(
+  object = merged_seurat,
+  group.by.vars = "sample", 
+  reduction = "pca",
+  plot_convergence = TRUE,
+  reduction.save = "harmony",
+  max.iter.harmony = 20,
+  seed.use = 42
+  )
+
+# new integrated embeddings are stored in a dedicated reduction slot
+```
+
+## Integration by Scanorama
+
+### Prepare input to Scanorama
+* batch = sample
+* list of cell-by-gene matrices by individual batches (unnamed); use scaled/regressed counts
+* list of HVG (unnamed)
+```{r}
+# split the dataset into a list of seurat objects 
+datasets <- SplitObject(final_seurat, split.by = "sample")
+
+# normalize and identify variable features for each dataset independently
+datasets <- lapply(X = datasets, FUN = function(x) {
+    x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration
+genelist <- SelectIntegrationFeatures(object.list = datasets, nfeatures = 2000)
+
+# overwrite batch-specific HVG with batch-aware HVG
+assign_HVG <- function(seurat_object) { 
+    seurat_object@assays$RNA@var.features <- genelist
+    return(seurat_object)
+}
+
+datasets <- lapply(X = datasets, FUN = assign_HVG)
+
+# scale each batch separately according to batch-aware HVG
+datasets <- lapply(X = datasets, FUN = ScaleData, 
+                   features = genelist, vars.to.regress = c('percent_MT', 'nCount_RNA'))
+
+# extract data
+assaylist <- list() # List of datasets (matrices of cells-by-genes)
+genelist <- list() # List of gene lists
+
+for(i in 1:length(datasets)) {
+   assaylist[[i]] <- t(as.matrix(GetAssayData(datasets[[i]], "scale.data")))
+   genelist[[i]] <- VariableFeatures(datasets[[i]])
+}
+
+# important for running python: remove names
+names(assaylist) = NULL
+names(genelist) = NULL
+```
+
+### Run Scanorama
+```{r}
+library(reticulate)
+Sys.which("python") #"/usr/bin/python" by default
+use_condaenv("Cellula")
+scanorama <- import('scanorama')
+
+# Integration and batch correction
+integrated.corrected.data <- scanorama$correct(assaylist, genelist, return_dimred=TRUE, return_dense=TRUE) # list of 3 elements: embeddings (1), corrected counts (2), genes (3)
+
+saveRDS(integrated.corrected.data, paste0(path_data, 'integrated.corrected.data.rds'))
+```
+
+### Store scanorama embeddings in Seurat
+```{r}
+# corrected counts
+#intdata <- lapply(integrated.corrected.data[[2]], t)
+#panorama <- do.call(cbind, intdata)
+#rownames(panorama) <- as.character(integrated.corrected.data[[3]])
+#colnames(panorama) <- unlist(sapply(assaylist, rownames))
+
+# embeddings
+intdimred <- do.call(rbind, integrated.corrected.data[[1]])
+colnames(intdimred) <- paste0("PC_", 1:100)
+
+# also add standard deviations in order to draw Elbow Plots in Seurat
+stdevs <- apply(intdimred, MARGIN = 2, FUN = sd)
+
+# assign cells to PCs
+rownames(intdimred) <- colnames(final_seurat)
+
+# store embeddings
+final_seurat[["scanorama"]] <- CreateDimReducObject(embeddings = intdimred, stdev = stdevs, key = "PC_", assay = "RNA")
+```
+
+## Check embeddings
+```{r}
+### PCA scaled
+p1 <- DimPlot(final_seurat, reduction = 'pca', 
+        group.by = 'sample', cols = colors$sample, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- DimPlot(final_seurat, reduction = 'pca', 
+        group.by = 'seq_run', cols = colors$discrete, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- DimPlot(final_seurat, reduction = 'pca', 
+        group.by = 'cohort', cols = colors$cohort, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- DimPlot(final_seurat, reduction = 'pca', 
+        group.by = 'cell_cycle_seurat', cols = colors$cell_cycle, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- DimPlot(final_seurat, reduction = 'pca', 
+        group.by = 'aggregated_lineage', cols = colors$aggregated_lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/embeddings_PCA.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 3, widths = 5, heights = 5) +
+         plot_annotation(
+           title = 'PCA', 
+           theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 20, height = 12)
+```
+
+```{r}
+### harmony
+p1 <- DimPlot(final_seurat, reduction = 'harmony', 
+        group.by = 'sample', cols = colors$sample, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- DimPlot(final_seurat, reduction = 'harmony', 
+        group.by = 'seq_run', cols = colors$discrete, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- DimPlot(final_seurat, reduction = 'harmony', 
+        group.by = 'cohort', cols = colors$cohort, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- DimPlot(final_seurat, reduction = 'harmony', 
+        group.by = 'cell_cycle_seurat', cols = colors$cell_cycle, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- DimPlot(final_seurat, reduction = 'harmony', 
+        group.by = 'aggregated_lineage', cols = colors$aggregated_lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/embeddings_harmony.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 3, widths = 5, heights = 5) +
+         plot_annotation(title = 'harmony', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 20, height = 12)
+```
+
+```{r}
+### scanorama
+p1 <- DimPlot(final_seurat, reduction = 'scanorama', 
+        group.by = 'sample', cols = colors$sample, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- DimPlot(final_seurat, reduction = 'scanorama', 
+        group.by = 'seq_run', cols = colors$discrete, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- DimPlot(final_seurat, reduction = 'scanorama', 
+        group.by = 'cohort', cols = colors$cohort, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- DimPlot(final_seurat, reduction = 'scanorama', 
+        group.by = 'cell_cycle_seurat', cols = colors$cell_cycle, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- DimPlot(final_seurat, reduction = 'scanorama', 
+        group.by = 'aggregated_lineage', cols = colors$aggregated_lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/embeddings_scanorama.png'), 
+       p1 + p2 + p3 + p4 +
+         plot_layout(ncol = 3, widths = 5, heights = 5) +
+         plot_annotation(title = 'scanorama', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 20, height = 12)
+```
+
+## check biological variables on UMAP computed from different embeddings
+### Run UMAP
+```{r, include=TRUE, warning=TRUE, message=TRUE}
+pca_seurat <- RunUMAP(
+  final_seurat,
+  reduction.name = "UMAP",
+  reduction = "pca",
+  dims = 1:50,
+  n.components = 2,
+  seed.use = 100
+)
+
+harmony_seurat <- RunUMAP(
+  final_seurat,
+  reduction.name = "UMAP",
+  reduction = "harmony",
+  dims = 1:50,
+  n.components = 2,
+  seed.use = 100
+)
+
+scanorama_seurat <- RunUMAP(
+  final_seurat,
+  reduction.name = "UMAP",
+  reduction = "scanorama",
+  dims = 1:50,
+  n.components = 2,
+  seed.use = 100
+)
+```
+
+### Check main biological variables
+```{r}
+### PCA
+p1 <- DimPlot(pca_seurat, reduction = 'UMAP', 
+        group.by = 'sample', cols = colors$sample, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- DimPlot(pca_seurat, reduction = 'UMAP', 
+        group.by = 'seq_run', cols = colors$discrete, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- DimPlot(pca_seurat, reduction = 'UMAP', 
+        group.by = 'cohort', cols = colors$cohort, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- DimPlot(pca_seurat, reduction = 'UMAP', 
+        group.by = 'cell_cycle_seurat', cols = colors$cell_cycle, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- DimPlot(pca_seurat, reduction = 'UMAP', 
+        group.by = 'aggregated_lineage', cols = colors$aggregated_lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/UMAP_PCA.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 3, widths = 5, heights = 5) +
+         plot_annotation(title = 'PCA', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 20, height = 12)
+
+### harmony
+p1 <- DimPlot(harmony_seurat, reduction = 'UMAP', 
+        group.by = 'sample', cols = colors$sample, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- DimPlot(harmony_seurat, reduction = 'UMAP', 
+        group.by = 'seq_run', cols = colors$discrete, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- DimPlot(harmony_seurat, reduction = 'UMAP', 
+        group.by = 'cohort', cols = colors$cohort, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- DimPlot(harmony_seurat, reduction = 'UMAP', 
+        group.by = 'cell_cycle_seurat', cols = colors$cell_cycle, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- DimPlot(harmony_seurat, reduction = 'UMAP', 
+        group.by = 'aggregated_lineage', cols = colors$aggregated_lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/UMAP_harmony.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 3, widths = 5, heights = 5) +
+         plot_annotation(title = 'harmony', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 18, height = 12)
+
+### scanorama
+p1 <- DimPlot(scanorama_seurat, reduction = 'UMAP', 
+        group.by = 'sample', cols = colors$sample, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- DimPlot(scanorama_seurat, reduction = 'UMAP', 
+        group.by = 'seq_run', cols = colors$discrete, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- DimPlot(scanorama_seurat, reduction = 'UMAP', 
+        group.by = 'cohort', cols = colors$cohort, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- DimPlot(scanorama_seurat, reduction = 'UMAP', 
+        group.by = 'cell_cycle_seurat', cols = colors$cell_cycle, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- DimPlot(scanorama_seurat, reduction = 'UMAP', 
+        group.by = 'aggregated_lineage', cols = colors$aggregated_lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/UMAP_scanorama.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 3, widths = 5, heights = 5) +
+         plot_annotation(title = 'scanorama', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 20, height = 12)
+```
+
+### Check cell lineage at finer resolution
+```{r}
+p1 <- DimPlot(pca_seurat, reduction = 'UMAP', 
+        group.by = 'lineage', cols = colors$lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("PCA") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2),
+        legend.position = 'bottom'
+        )
+
+p2 <- DimPlot(harmony_seurat, reduction = 'UMAP', 
+        group.by = 'lineage', cols = colors$lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("harmony") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2),
+        legend.position = 'bottom'
+        )
+
+p3 <- DimPlot(scanorama_seurat, reduction = 'UMAP', 
+        group.by = 'lineage', cols = colors$lineage, pt.size = 0.1, shuffle = T, seed = 123) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("scanorama") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2),
+        legend.position = 'bottom'
+        )
+
+ggsave(paste0(path_results, 'plots/UMAP_lineage_embeddings.png'), 
+       p1 + p2 + p3 +
+         plot_layout(ncol = 3, widths = 5, heights = 5, guides = 'collect') &
+         theme(legend.position='bottom'),
+       width = 15, height = 7)
+```
+
+### Check cell lineage pseudotime
+```{r}
+### PCA
+p1 <- FeaturePlot(pca_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Myelocytes") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Myelocytes") +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- FeaturePlot(pca_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.cDC") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.cDC") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- FeaturePlot(pca_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Megakaryocte" ) +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Megakaryocte") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- FeaturePlot(pca_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Erythroid") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Erythroid") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- FeaturePlot(pca_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.B.cells") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.B.cells") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/pt_PCA.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 5, widths = 5, heights = 5) +
+         plot_annotation(title = 'PCA', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 25, height = 5)
+
+### harmony
+p1 <- FeaturePlot(harmony_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Myelocytes") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Myelocytes") +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- FeaturePlot(harmony_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.cDC") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.cDC") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- FeaturePlot(harmony_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Megakaryocte" ) +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Megakaryocte") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- FeaturePlot(harmony_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Erythroid") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Erythroid") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- FeaturePlot(harmony_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.B.cells") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.B.cells") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/pt_harmony.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 5, widths = 5, heights = 5) +
+         plot_annotation(title = 'harmony', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 25, height = 5)
+
+### scanorama
+p1 <- FeaturePlot(scanorama_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Myelocytes") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Myelocytes") +
+  coord_fixed(ratio = 1, clip = "on") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p2 <- FeaturePlot(scanorama_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.cDC") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.cDC") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p3 <- FeaturePlot(scanorama_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Megakaryocte" ) +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Megakaryocte") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p4 <- FeaturePlot(scanorama_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.Erythroid") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.Erythroid") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+p5 <- FeaturePlot(scanorama_seurat, reduction = 'UMAP', pt.size = 0.1, features = "pt.B.cells") +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme_bw() +
+  coord_equal() +
+  ggtitle("pt.B.cells") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1,
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 10),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 15),
+        legend.margin = margin(rep(0,4), "cm"),
+        legend.justification = "left"
+        )
+
+ggsave(paste0(path_results, 'plots/pt_scanorama.png'), 
+       p1 + p2 + p3 + p4 + p5 +
+         plot_layout(ncol = 5, widths = 5, heights = 5) +
+         plot_annotation(title = 'scanorama', 
+                         theme = theme(plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 3, size = 18))),
+       width = 25, height = 5)
+```
+
+```{r}
+# elbow plot on new embeddings
+ElbowPlot(seurat_k, reduction = "scanorama", ndims = 100) +
+  geom_vline(xintercept = 30, linetype = 2, color = "red") +
+  theme_bw() +
+  ggtitle("scanorama") +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1)
+
+ggsave(paste0(path_results, "scanorama_elbow.png"), width = 5, height = 5)
+```
+
+```{r}
+# save seurat object 
+final_seurat@meta.data <- final_seurat@meta.data %>%
+  dplyr::select(-contains("Hay")) 
+
+saveRDS(final_seurat, paste0(path_data, "final_seurat.rds"))
+```
+
+## Session info
+```{r}
+sessionInfo()
+```
