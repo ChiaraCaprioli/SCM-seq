@@ -1,0 +1,191 @@
+import os
+configfile: "/hpcnfs/scratch/PGP/niman/snakemake_flames/saml1_promethion/config.yaml"
+
+fastq_enriched = config["fastq_enriched"]
+fastq_non_enriched = config["fastq_non_enriched"]
+output_enriched= config["output_sample_enriched"]
+output_non_enriched= config["output_sample_non_enriched"]
+bc_= config["bc_"]
+genome_gtf= config["genome_gtf"]
+genome_fa= config["genome_fa"]
+minimap2_dir= config["minimap2_dir"]
+config_flames_enriched= config["config_flames_enriched"]
+config_flames_non_enriched= config["config_flames_non_enriched"]
+AML_WES= config["AML_WES"]
+AML_80= config["AML_80"]
+short_= config["short_rds"]
+
+def chainfile2link_enriched(wildcards):
+    return fastq_enriched[wildcards.chainfile]
+
+def chainfile2link_non_enriched(wildcards):
+    return fastq_non_enriched[wildcards.chainfile]
+
+rule all:
+    input:
+       # os.path.join("output_","bc_matching","merged_fastq"),
+        #os.path.join(output_enriched, "out_flames_sc_enriched"),
+        os.path.join(output_non_enriched, "out_flames_sc_non_enriched"),
+        os.path.join(output_enriched, "Genotype_imputation")
+       # os.path.join("output_", "out_flames_bulk")
+       # os.path.join("output_","merged_fastq", "output_merged_samples.fastq.gz"),
+       # expand(os.path.join("output_", "{chainfile}.fastq.gz"), chainfile=fastq.keys()),
+       # expand(os.path.join("output_", "{chainfile}.txt"), chainfile=fastq.keys())
+
+rule bc_matching_enriched:
+    output: 
+        ou_fq=os.path.join(output_enriched,"bc_matching", "{chainfile}.fastq.gz"),
+        ou_txt=os.path.join(output_enriched,"bc_matching", "{chainfile}.txt")
+    input:
+        bc=bc_,
+        fastq=chainfile2link_enriched
+    resources:
+        mem_mb= 32000
+    shell:
+        """
+        /hpcnfs/home/ieo5268/FLAMES/src/match_cell_barcode {input.fastq} {output.ou_txt} {output.ou_fq} {input.bc} 1 12
+        """
+rule bc_matching_non_enriched:
+    output: 
+        ou_fq=os.path.join(output_non_enriched,"bc_matching", "{chainfile}.fastq.gz"),
+        ou_txt=os.path.join(output_non_enriched,"bc_matching", "{chainfile}.txt")
+    input:
+        bc=bc_,
+        fastq=chainfile2link_non_enriched
+    resources:
+        mem_mb= 32000
+    shell:
+        """
+        /hpcnfs/home/ieo5268/FLAMES/src/match_cell_barcode {input.fastq} {output.ou_txt} {output.ou_fq} {input.bc} 1 12
+        """
+        
+rule merge_enriched:
+    output:
+        ou_= os.path.join(output_enriched,"bc_matching","merged_fastq","output_merged_samples.fastq.gz")
+    input:
+        input_= expand(os.path.join(output_enriched,"bc_matching", "{chainfile}.fastq.gz"),chainfile=fastq_enriched.keys())
+    resources:             
+        mem_mb= 32000
+    shell:
+        """
+        cat {input.input_} > {output.ou_}
+        """
+
+rule merge_non_enriched:
+    output:
+        ou_= os.path.join(output_non_enriched,"bc_matching","merged_fastq","output_merged_samples.fastq.gz")
+    input:
+        input_= expand(os.path.join(output_non_enriched,"bc_matching", "{chainfile}.fastq.gz"),chainfile=fastq_non_enriched.keys())
+    resources:             
+        mem_mb= 32000
+    shell:
+        """
+        cat {input.input_} > {output.ou_}
+        """
+
+rule flames_sc_enriched:
+    output:
+        out_flames_sc=directory(os.path.join(output_enriched, "out_flames_sc_enriched"))
+    input:
+        fq_=rules.merge_enriched.output.ou_,
+        genome_gtf=genome_gtf,
+        genome_fa=genome_fa,
+        minimap2_dir=minimap2_dir,
+        config_flames=config_flames_enriched
+
+    conda: "FLAMES1.yaml"
+
+    resources:             
+        mem_mb= 32000  
+    shell:
+        """
+        /hpcnfs/home/ieo5268/FLAMES/python/sc_long_pipeline.py \
+        --gff3 {input.genome_gtf} \
+        --infq {input.fq_} \
+        --outdir {output.out_flames_sc} \
+        --genomefa {input.genome_fa} \
+        --minimap2_dir {input.minimap2_dir} \
+        --config_file {input.config_flames} \
+        --downsample_ratio 1
+        """
+
+rule flames_sc_non_enriched:
+    output:
+        out_flames_sc=directory(os.path.join(output_non_enriched, "out_flames_sc_non_enriched"))
+    input:
+        fq_ =rules.merge_non_enriched.output.ou_,
+        genome_gtf=genome_gtf,
+        genome_fa=genome_fa,
+        minimap2_dir=minimap2_dir,
+        config_flames=config_flames_non_enriched
+    
+    conda: "FLAMES1.yaml"
+
+    resources:             
+        mem_mb= 32000  
+    shell:
+        """
+        /hpcnfs/home/ieo5268/FLAMES/python/sc_long_pipeline.py \
+        --gff3 {input.genome_gtf} \
+        --infq {input.fq_} \
+        --outdir {output.out_flames_sc} \
+        --genomefa {input.genome_fa} \
+        --minimap2_dir {input.minimap2_dir} \
+        --config_file {input.config_flames} \
+        --downsample_ratio 1
+        """
+
+rule mutation:
+    output:
+        ou_= directory(os.path.join(output_enriched,"Mutation"))
+    input:
+        input_= rules.flames_sc_enriched.output.out_flames_sc,
+        aml_= AML_WES,
+        aml80_ = AML_80,
+        genome_gtf=genome_gtf,
+        genome_fa=genome_fa
+    threads: 8
+    resources:             
+        mem_mb= 32000
+
+    singularity: "/hpcnfs/data/PGP/niman/SCM_rsudio.sif"
+
+    shell:
+        """
+        Rscript /hpcnfs/scratch/PGP/niman/snakemake_flames/R/Mutation.R {input.input_} {input.aml_} {input.aml80_} {output.ou_} {input.genome_gtf} {input.genome_fa}
+        """
+
+rule BC_demux:
+    output:
+        ou_= directory(os.path.join(output_enriched,"BC_DEMUX"))
+    input:
+        input_= rules.mutation.output.ou_,
+        short_read=short_,
+        bc_=bc_
+
+    resources:             
+        mem_mb= 32000
+
+    singularity: "/hpcnfs/data/PGP/niman/SCM_rsudio.sif"
+
+    shell:
+        """
+        Rscript /hpcnfs/scratch/PGP/niman/snakemake_flames/R/BC_demux.R {input.input_} {output.ou_} {input.short_read} {input.bc_} 
+        """
+
+rule genotype_imputation:
+    output:
+        Genotype_imputation=directory(os.path.join(output_enriched, "Genotype_imputation"))
+    input:
+        bc_dem =rules.BC_demux.output.ou_
+    
+    conda: "FLAMES1.yaml"
+
+    resources:             
+        mem_mb= 32000  
+    shell:
+        """
+        python /hpcnfs/scratch/PGP/niman/snakemake_flames/python/genotype_imputation.py {input.bc_dem} {output.Genotype_imputation}
+        """
+
+

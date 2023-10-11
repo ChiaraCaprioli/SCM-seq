@@ -1,0 +1,29 @@
+#address of the fastq fgiles with replicates (flowcells) number
+fastq_enriched:
+    FC1: /hpcnfs/techunits/genomics/PublicData/Pelicci/ccaprioli/FASTQ/20220629_DCS109/S44796_562
+
+fastq_non_enriched:
+    FC1: /hpcnfs/techunits/genomics/PublicData/TSSM/ccaprioli/FAST5/20201126_1238_X2_FAL84801_90c33507/S31095_sAML1_b_amp/fastq_pass
+    FC2: /hpcnfs/techunits/genomics/PublicData/TSSM/ccaprioli/FAST5/20210427_1529_X1_FAL80765_598d3e1b/S34037_sAML1b_amp_1/fastq_pass
+    FC3: /hpcnfs/techunits/genomics/PublicData/TSSM/ccaprioli/FAST5/20210427_1529_X2_FAL80802_b1a57d8c/S34038_sAML1b_amp_2/fastq_pass
+    FC4: /hpcnfs/techunits/genomics/PublicData/TSSM/ccaprioli/FAST5/20210427_1529_X3_FAL80938_f2340753/S34039_sAML1b_amp_3/fastq_pass
+
+AML_WES: "/hpcnfs/scratch/PGP/niman/snakemake_flames/saml1_promethion"
+AML_80: "/hpcnfs/scratch/PGP/niman/snakemake_flames"
+
+#output directory to save data
+output_sample_enriched: "/hpcnfs/scratch/PGP/SCMseq/saml1_promethion/merged_enriched"
+output_sample_non_enriched: "/hpcnfs/scratch/PGP/SCMseq/saml1_promethion/merged_non_enriched"
+#barcode list from short
+bc_: "/hpcnfs/scratch/PGP/niman/snakemake_flames/saml1_promethion/BC.csv"
+#genome annotation gtf file
+genome_gtf: "/hpcnfs/scratch/PGP/niman/Chiara/FLAMES/h38_cagepeak/gencode.v24.annotation.gtf"
+#genome fasta file
+genome_fa: "/hpcnfs/scratch/PGP/niman/Chiara/FLAMES/h38_cagepeak/GRCh38.primary_assembly.genome.fa"
+#minimap2 directory
+minimap2_dir: "/hpcnfs/scratch/PGP/niman/Chiara/tools/minimap2/minimap2"
+#FLAMES configuration file address
+config_flames_enriched: "/hpcnfs/scratch/PGP/niman/snakemake_flames/saml1_promethion/config_sclr_nanopore_enriched.json"
+config_flames_non_enriched: "/hpcnfs/scratch/PGP/niman/snakemake_flames/saml1_promethion/config_sclr_nanopore_non_enriched.json"
+
+short_rds: "/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/sAML1.rds"
