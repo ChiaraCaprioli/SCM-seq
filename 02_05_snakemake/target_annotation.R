@@ -4,10 +4,17 @@ author: "Chiara Caprioli"
 date: "Oct 12th 2023"
 ---
 
-# To inform the selection of targets for mutation-specific enrichment, 
-# we need to further annotate candidate variants according to:
-# - expression in scRNAseq data
-# - clonal structure
+/*
+To inform the selection of targets for mutation-specific enrichment, 
+we need to further annotate candidate variants according to:
+- expression in scRNAseq data
+- clonal structure
+
+We need to feed a sample sheet with the following structure:
+|sample_id|path_annotation|path_tenx_matrix|path_pyclone|
+|:---:|:---:|:---:|:---:|
+|sample1|/path2/annotation/somatic/sample1/|/path2/sample1/filtered_feature_bc_matrix/|/path2/sample1.pyclone.output.tsv|
+*/
   
 # Load libraries
 library(tidyverse)
