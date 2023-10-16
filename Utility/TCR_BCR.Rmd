@@ -1,0 +1,518 @@
+---
+title: "TCR_BCR"
+author: "Iman Nazari"
+date: "30/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 6, 
+  fig.height = 4
+)
+```
+
+
+```{r}
+library(stringr)
+library(tidyverse)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(biomaRt)
+library(IsoformSwitchAnalyzeR)
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(SecretSanta)
+library(idpr)
+library(DGEobj.utils)
+library(Biostrings)
+library(msaR)
+library(seqinr)
+library(SecretSanta) ##library(SignalP)
+library(Seurat)
+library(immunarch)
+library(TrustVDJ)
+source("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/RIMA_immune_repertoire/trust4_metric_functions.R")
+```
+
+```{r}
+outdir_BCR="/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/BCR/"
+outdir_TCR="/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/TCR/"
+dir.create(outdir_BCR)
+dir.create(outdir_TCR)
+sAML1 <- read.csv(file = "/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/TRUST_output_merged_samples_report.tsv",sep = "\t",stringsAsFactors = F)
+head_<- colnames(sAML1)
+head_[1]<- "#count"
+colnames(sAML1)<- head_
+sAML1.bcr <- subset(sAML1, grepl("^IG",V) | grepl("^IG",J) | grepl("^IG",C))
+sAML1.tcr <- subset(sAML1, grepl("^TR",V) | grepl("^TR",J) | grepl("^TR",C))
+write_delim(sAML1.tcr, file = paste(outdir_TCR, "sAML1_TCR.txt",sep = ""),delim = "\t")
+write_delim(sAML1.bcr, file = paste(outdir_BCR, "sAML1_BCR.txt",sep = ""),delim = "\t")
+
+AML4 <- read.csv(file = "/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/aml4_promethion/TRUST_output_merged_samples_report.tsv",sep = "\t",stringsAsFactors = F)
+head_<- colnames(AML4)
+head_[1]<- "#count"
+colnames(AML4)<- head_
+AML4.bcr <- subset(AML4, grepl("^IG",V) | grepl("^IG",J) | grepl("^IG",C))
+AML4.tcr <- subset(AML4, grepl("^TR",V) | grepl("^TR",J) | grepl("^TR",C))
+write_delim(AML4.tcr, file = paste(outdir_TCR, "AML4_TCR.txt",sep = ""),delim = "\t")
+write_delim(AML4.bcr, file = paste(outdir_BCR, "AML4_BCR.txt",sep = ""),delim = "\t")
+
+AML5 <- read.csv(file = "/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/aml5_promethion/TRUST_output_merged_samples_report.tsv",sep = "\t",stringsAsFactors = F)
+head_<- colnames(AML5)
+head_[1]<- "#count"
+colnames(AML5)<- head_
+AML5.bcr <- subset(AML5, grepl("^IG",V) | grepl("^IG",J) | grepl("^IG",C))
+AML5.tcr <- subset(AML5, grepl("^TR",V) | grepl("^TR",J) | grepl("^TR",C))
+write_delim(AML5.tcr, file = paste(outdir_TCR, "AML5_TCR.txt",sep = ""),delim = "\t")
+write_delim(AML5.bcr, file = paste(outdir_BCR, "AML5_BCR.txt",sep = ""),delim = "\t")
+
+
+
+immdata_tcr <- repLoad("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/TCR") 
+exp_len <- repExplore(immdata_tcr$data, .method = "len", .col = "aa")
+exp_cnt <- repExplore(immdata_tcr$data, .method = "count")
+exp_vol <- repExplore(immdata_tcr$data, .method = "volume")
+
+p1 <- vis(exp_len)
+p2 <- vis(exp_cnt)
+p3 <- vis(exp_vol)
+p1
+p2/p3
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/all_tcr.jpg",plot=(p1+p2)/(p3),width = 15,height = 10)
+##########
+immdata_tcr <- repLoad("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/BCR") 
+exp_len <- repExplore(immdata_tcr$data, .method = "len", .col = "aa")
+exp_cnt <- repExplore(immdata_tcr$data, .method = "count")
+exp_vol <- repExplore(immdata_tcr$data, .method = "volume")
+
+p1 <- vis(exp_len)
+p2 <- vis(exp_cnt)
+p3 <- vis(exp_vol)
+p1
+p2/p3
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/all_bcr.jpg",plot=(p1+p2)/(p3),width = 15,height = 10)
+```
+
+
+
+
+
+
+
+
+```{r}
+x<- read.csv("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/genotype_clones/data/df_all_complete.csv")
+x$confidence %>% table()
+#######filtering by genotype
+combined_aml<- readRDS("/hpcnfs/scratch/PGP/SCMseq/short_read_analysis/data/AML.combined.sct.rds")
+#Idents(object = aml_n) 
+sAML1_short_saml<-  subset(x = combined_aml,sample=="sAML1")
+sAML1_short_saml$barcode<- stringr::str_remove(colnames(sAML1_short_saml),pattern = "-sAML1")
+sAML1_short<- subset(x = combined_aml, n_mut_pro>2 & sample=="sAML1")
+sAML1_short$barcode<- stringr::str_remove(colnames(sAML1_short),pattern = "-sAML1")
+#########
+sAML1_bc <- read.csv(file = "/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/TRUST_output_merged_samples_barcode_report.tsv",sep = "\t",stringsAsFactors = F)
+head_<- colnames(sAML1_bc)
+head_[1]<- "barcode"
+colnames(sAML1_bc)<- head_
+
+#######
+sAML1_bc_air <- read.csv(file = "/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/TRUST_output_merged_samples_barcode_airr.tsv",sep = "\t",stringsAsFactors = F)
+meta_short<- sAML1_short@meta.data
+meta_short_saml<- sAML1_short_saml@meta.data
+##########all bcr
+
+####bcr
+sAML1.bcr$barcode<- stringr::str_remove(sAML1.bcr$cid,pattern = "_\\d+$")
+com_bc_<- intersect(sAML1_bc_air$cell_id ,meta_short_saml$barcode )
+com_bc<- intersect(com_bc_ ,sAML1.bcr$barcode )
+sAML1_bc_air$barcode<- sAML1_bc_air$cell_id
+#sAML1_short_<- subset(x = sAML1_short, barcode%in%com_bc )
+immun_1<- sAML1_bc_air[sAML1_bc_air$cell_id %in% com_bc,]
+immun_2<- sAML1.bcr[sAML1.bcr$barcode %in% com_bc,]
+df_immu<- merge(immun_1,immun_2,by="barcode")
+df_immu_bcr_all<- merge(df_immu,meta_short_saml,by="barcode")
+write_delim(df_immu_bcr_all,"/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_bcr_all.txt",delim = "\t")
+bcr_bc_l<- df_immu_bcr_all$barcode %>% table() %>% as.data.frame() %>% dplyr::rename(.,Cell = .)
+p<-ggplot(data=bcr_bc_l, aes(x=Cell, y=Freq)) +
+  geom_line()+
+  geom_point()+labs(title =paste0("sAML1_BCR: ","#Cell= ",length(bcr_bc_l$Cell)," #BCRs detected= ",sum(bcr_bc_l$Freq)))+
+  theme_classic()+theme(axis.text.x=element_blank(),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_bcr_unique_bc.jpg",plot=p,width = 15,height = 10)
+######tcr-all
+
+sAML1.tcr$barcode<- stringr::str_remove(sAML1.tcr$cid,pattern = "_\\d+$")
+com_bc_<- intersect(sAML1_bc_air$cell_id ,meta_short_saml$barcode )
+com_bc<- intersect(com_bc_ ,sAML1.tcr$barcode )
+sAML1_bc_air$barcode<- sAML1_bc_air$cell_id
+#sAML1_short<- subset(x = sAML1_short, barcode%in%com_bc )
+immun_1<- sAML1_bc_air[sAML1_bc_air$cell_id %in% com_bc,]
+immun_2<- sAML1.tcr[sAML1.tcr$barcode %in% com_bc,]
+df_immu<- merge(immun_1,immun_2,by="barcode")
+df_immu_tcr_all<- merge(df_immu,meta_short_saml,by="barcode")
+write_delim(df_immu_tcr_all,"/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_tcr_all.txt",delim = "\t")
+tcr_bc_l<- df_immu_tcr_all$barcode %>% table() %>% as.data.frame() %>% dplyr::rename(.,Cell=.)
+p<- ggplot(data=tcr_bc_l, aes(x=Cell, y=Freq)) +
+  geom_line()+
+  geom_point()+labs(title =paste0("sAML1_TCR: ","#Cell= ",length(tcr_bc_l$Cell)," #TCRs detected= ",sum(tcr_bc_l$Freq)))+
+  theme_classic()+theme(axis.text.x=element_blank(),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_tcr_unique_bc.jpg",plot=p,width = 15,height = 10)
+
+##################
+####bcr-genotyped
+sAML1.bcr$barcode<- stringr::str_remove(sAML1.bcr$cid,pattern = "_\\d+$")
+com_bc_<- intersect(sAML1_bc_air$cell_id ,meta_short$barcode )
+com_bc<- intersect(com_bc_ ,sAML1.bcr$barcode )
+sAML1_bc_air$barcode<- sAML1_bc_air$cell_id
+#sAML1_short_<- subset(x = sAML1_short, barcode%in%com_bc )
+immun_1<- sAML1_bc_air[sAML1_bc_air$cell_id %in% com_bc,]
+immun_2<- sAML1.bcr[sAML1.bcr$barcode %in% com_bc,]
+df_immu<- merge(immun_1,immun_2,by="barcode")
+df_immu_bcr<- merge(df_immu,meta_short,by="barcode")
+write_delim(df_immu_bcr,"/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_bcr_genotyped_2mut.txt",delim = "\t")
+bcr_bc_l<- df_immu_bcr$barcode %>% table() %>% as.data.frame() %>% dplyr::rename(.,Cell=.)
+p<- ggplot(data=bcr_bc_l, aes(x=Cell, y=Freq)) +
+  geom_line()+
+  geom_point()+labs(title =paste0("sAML1_BCR_>2mut: ","#Cell= ",length(bcr_bc_l$Cell)," #BCRs detected= ",sum(bcr_bc_l$Freq)))+
+  theme_classic()+theme(axis.text.x=element_blank(),text=element_text(size=12))
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_bcr_unique_bc_genotyped_2mut.jpg",plot=p,width = 15,height = 10)
+######tcr-genotyped
+str(sAML1.tcr)
+sAML1.tcr$barcode<- stringr::str_remove(sAML1.tcr$cid,pattern = "_\\d+$")
+com_bc_<- intersect(sAML1_bc_air$cell_id ,meta_short$barcode )
+com_bc<- intersect(com_bc_ ,sAML1.tcr$barcode )
+sAML1_bc_air$barcode<- sAML1_bc_air$cell_id
+#sAML1_short<- subset(x = sAML1_short, barcode%in%com_bc )
+immun_1<- sAML1_bc_air[sAML1_bc_air$cell_id %in% com_bc,]
+immun_2<- sAML1.tcr[sAML1.tcr$barcode %in% com_bc,]
+df_immu<- merge(immun_1,immun_2,by="barcode")
+df_immu_tcr<- merge(df_immu,meta_short,by="barcode")
+write_delim(df_immu_tcr,"/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_tcr_genotyped2mut.txt",delim = "\t")
+tcr_bc_l<- df_immu_tcr$barcode %>% table() %>% as.data.frame() %>% dplyr::rename(.,Cell=.)
+p<- ggplot(data=tcr_bc_l, aes(x=Cell, y=Freq)) +
+  geom_line()+
+  geom_point()+labs(title =paste0("sAML1_TCR_>2mut: ","#Cell= ",length(tcr_bc_l$Cell)," #TCRs detected= ",sum(tcr_bc_l$Freq)))+
+  theme_classic()+theme(axis.text.x=element_blank(),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_tcr_unique_bc_genotyped_2mut.jpg",plot=p,width = 15,height = 10)
+############
+
+library(ComplexHeatmap)
+####### all
+set.seed(100)
+df<- df_immu_tcr_all[c("barcode","cell_lineage","n_mut_pro")]
+df$n_mut_pro<- factor(df$n_mut_pro)
+x<-ggplot(df, aes(x = barcode, y = cell_lineage, fill = n_mut_pro)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("All_TCR_saml1"," Cells= ",length(unique(df$barcode))," TCRs= ",length(df$barcode)))+scale_fill_brewer(palette = "RdBu")
+x
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_tcr_all.jpg",plot=x,width = 15,height = 10)
+df<- df_immu_bcr_all[c("barcode","cell_lineage","n_mut_pro")]
+df$n_mut_pro<- factor(df$n_mut_pro)
+x<-ggplot(df, aes(x = barcode, y = cell_lineage, fill = n_mut_pro)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("All_BCR_saml1"," Cells= ",length(unique(df$barcode))," BCRs= ",length(df$barcode)))+scale_fill_brewer(palette = "RdBu")
+x
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_bcr_all.jpg",plot=x,width = 15,height = 10)
+
+####genotyped
+set.seed(100)
+df<- df_immu_tcr[c("barcode","cell_lineage","n_mut_pro")]
+df$n_mut_pro<- factor(df$n_mut_pro)
+x<-ggplot(df, aes(x = barcode, y = cell_lineage, fill = n_mut_pro)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("genotyped_TCR_saml1"," Cells= ",length(unique(df$barcode))," TCRs= ",length(df$barcode)))+scale_fill_brewer(palette = "RdBu")
+x
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_tcr.jpg",plot=x,width = 15,height = 10)
+df<- df_immu_bcr[c("barcode","cell_lineage","n_mut_pro")]
+df$n_mut_pro<- factor(df$n_mut_pro)
+x<-ggplot(df, aes(x = barcode, y = cell_lineage, fill = n_mut_pro)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("genotyped_BCR_saml1"," Cells= ",length(unique(df$barcode))," BCRs= ",length(df$barcode)))+scale_fill_brewer(palette = "RdBu")
+x
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_bcr.jpg",plot=x,width = 15,height = 10)
+####################
+```
+
+```{r}
+###############bcrs by cell_lineage
+df_immu_bcr_all<- read_delim("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_bcr_all.txt",delim = "\t")
+p<-df_immu_bcr_all %>% dplyr::select(barcode,cell_lineage) %>% count("cell_lineage") %>% ggplot(., aes(x=cell_lineage, y=freq, color=cell_lineage)) +geom_bar(stat="identity",fill="white")+labs(title="BCRs by Cell_lineage")+geom_text(aes(label=freq), position=position_dodge(width=0.9), vjust=-0.25)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),plot.background =  element_rect(fill = "white"),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/BCRs_by_Cell_lineage.jpg",plot=p,width = 15,height = 10)
+##############tcr
+df_immu_tcr_all<- read_delim("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_tcr_all.txt",delim = "\t")
+df_immu_tcr_all %>% dplyr::select(barcode,cell_lineage) %>% count("cell_lineage") 
+p<-df_immu_tcr_all %>% dplyr::select(barcode,cell_lineage) %>% count("cell_lineage") %>% ggplot(., aes(x=cell_lineage, y=freq, color=cell_lineage)) +geom_bar(stat="identity",fill="white")+labs(title="TCRs by Cell_lineage")+geom_text(aes(label=freq), position=position_dodge(width=0.9), vjust=-0.25)+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),plot.background =  element_rect(fill = "white"),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/TCRs_by_Cell_lineage.jpg",plot=p,width = 15,height = 10)
+
+```
+
+```{r}
+############################################################spliting chains
+
+TRA=c("TRAV","TRAD","TRAJ","TRAC")
+TRB=c("TRBV","TRBD","TRBJ","TRBC")
+TRD=c("TRDV","TRDD","TRDJ","TRDC")
+TRG=c("TRGV","TRGD","TRGJ","TRGC")
+
+IGH=c("IGHV","IGHD","IGHJ")
+IGL=c("IGLV","IGLD","IGLJ")
+IGK=c("IGKV","IGKD","IGKJ")
+#####create bionary table
+
+# 000 =N    = 0
+# 001 =J    = 1
+# 010=D   = 2
+# 011 =DJ   = 3
+# 100 =V    = 4
+# 101 =VJ   = 5
+# 110 =VD  = 6
+# 111 =VDJ  = 7
+
+####bcr
+df_immu_bcr_all$barcode %in% sAML1_bc$barcode
+bcr_bc<- merge(df_immu_bcr_all,sAML1_bc,by="barcode")
+bc_chain<- bcr_bc[,c("barcode","cell_type","chain1","chain2")]
+bc_chain$barcode<- make.names(bc_chain$barcode,unique=T)
+bc_chain<- as.data.frame(bc_chain)
+x<- str_split(bc_chain$chain1,",") 
+####chain 1
+bc_chain$ch1_VDJ<- sapply(x,function(a){
+  #a=x[254]
+  #t<- (TRB %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG"))) 
+  if (sum(IGH %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG..")))!=0){
+  z=(IGH %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG.."))) 
+  }else if (sum(IGL %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG..")))!=0){
+    z=(IGL %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG.."))) 
+  }else if (sum(IGK %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG..")))!=0){
+    z=(IGK %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG.."))) 
+  }else {
+    z=c(0,0,0)
+  }
+  as.numeric(z) %>% as.data.frame()%>% mutate(val=paste0(.[1],.[2],.[3]))%>% .[1,2] %>% as.numeric()%>%strtoi(.,base = 2)%>% as.character()%>% switch(.,"0"="N","1"="J","2"="D","3"="DJ","4"="V","5"="VJ","6"="VD","7"="VDJ")
+}
+ ) 
+########chain2 
+x<- str_split(bc_chain$chain2,",") 
+####chain 1
+bc_chain$ch2_VDJ<- sapply(x,function(a){
+  #a=x[254]
+  #t<- (TRB %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG"))) 
+  if (sum(IGH %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG..")))!=0){
+  z=(IGH %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG.."))) 
+  }else if (sum(IGL %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG..")))!=0){
+    z=(IGL %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG.."))) 
+  }else if (sum(IGK %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG..")))!=0){
+    z=(IGK %in% (unlist(a) %>% subset(.,grepl("IG",.))%>% str_extract(.,"IG.."))) 
+  }else {
+    z=c(0,0,0)
+  }
+  as.numeric(z) %>% as.data.frame()%>% mutate(val=paste0(.[1],.[2],.[3]))%>% .[1,2] %>% as.numeric()%>%strtoi(.,base = 2)%>% as.character()%>% switch(.,"0"="N","1"="J","2"="D","3"="DJ","4"="V","5"="VJ","6"="VD","7"="VDJ")
+}
+ ) 
+x<-bc_chain %>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ) %>%
+  ggplot(aes(fill = value, y = name, x = barcode)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+scale_fill_brewer(palette = "PiYG")+labs(x = "BCRs")
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Bcr_chain.jpg",plot=x,width = 15,height = 10)
+###########
+###################################################################################BCR
+###chain 1
+df<-bc_chain$ch1_VDJ %>% table() %>% as.data.frame()
+chain1_bc<- ggplot(df, aes(x = "", y = Freq, fill = .)) +geom_col(color = "white") +
+  geom_text(aes(label = Freq),position = position_stack(vjust = 0.5)) +coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "BrBG") +theme_void() + labs(title="Chain1 VDJ reccombination",
+       subtitle=paste0("Total number of BCR_ch1 = ",sum(df$Freq)),
+       caption="B-cell receptors chain1 piechart",
+       tag = 'BCR (B)'
+       )
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Bcr_chain1_piechart.jpg",plot=chain1_bc,width = 15,height = 10)
+####chain2
+df<-bc_chain$ch2_VDJ %>% table() %>% as.data.frame()
+chain2_bc<- ggplot(df, aes(x = "", y = Freq, fill = .)) +geom_col(color = "white") +
+  geom_text(aes(label = Freq),position = position_stack(vjust = 0.5)) +coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "BrBG") +theme_void() + labs(title="Chain2 VDJ reccombination",
+       subtitle=paste0("Total number of BCR_ch2 = ",sum(df$Freq)),
+       caption="B-cell receptors chain2 piechart",
+       tag = 'BCR (B)'
+       )
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Bcr_chain2_piechart.jpg",plot=chain2_bc,width = 15,height = 10)
+####cells with both chains
+df<- subset(bc_chain,c(ch2_VDJ!="N" & ch1_VDJ!="N"))
+uni_bc1<- df$barcode %>% gsub(".\\d+$","",.)%>% unique()
+uni_bc<- uni_bc1  %>% length()
+df$barcode<- make.names(df$barcode,unique=T)
+df<- df %>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+chain_12_bc<-ggplot(df, aes(x = barcode, y = name, fill = value)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("BCR both chains"," BCRs= ",length(unique(df$barcode) )," Cells= ", uni_bc))+scale_fill_brewer(palette = "RdBu")+labs(x = "BCRs")
+chain_12_bc
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Bcr_chain12_piechart.jpg",plot=chain_12_bc,width = 15,height = 10)
+#################################by cell_lineage
+p<-df_immu_bcr_all %>% dplyr::select(barcode,cell_lineage) %>%subset(.,barcode %in% uni_bc1)%>%count("cell_lineage") %>% ggplot(., aes(x=cell_lineage, y=freq, color=cell_lineage)) +geom_bar(stat="identity",fill="white")+labs(title="BCRs by Cell_lineage")+geom_text(aes(label=freq), position=position_dodge(width=0.9), vjust=-0.25)+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),plot.background =  element_rect(fill = "white"),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/BCRs_by_Cell_lineage_chain12.jpg",plot=p,width = 15,height = 10)
+
+###
+df_immu_bcr<- read_delim("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_bcr_genotyped.txt",delim = "\t")
+df<- subset(bc_chain,ch2_VDJ!="N" & ch1_VDJ!="N") #%>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+#df_immu_tcr<- subset(df_immu_tcr,aggregated_lineage==c("HSC_progenitors"))
+df_complete<- df_immu_bcr[df_immu_bcr$barcode %in% intersect(df_immu_bcr$barcode,df$barcode),] #######intersect=0, there is no BCR with both chains completed in HSC ( all in cd4 memory and gdT cells)
+x<- df_complete$cell_lineage %>% count() %>% tibble()
+colnames(x)<- c("Cell_lineage", "Freq")
+mut_bc_<- ggplot(x, aes(x = "", y = Freq, fill = Cell_lineage)) +geom_col(color = "white") +
+  geom_text(aes(label = Freq),position = position_stack(vjust = 0.5)) +coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "PiYG") +theme_void() + labs(title="BCRs with high mut with both Heavy and light chain",
+       subtitle=paste0("Total number of BCRs = ",sum(x$Freq)," Cells= ",length(unique(df_complete$barcode))),
+       caption="B-cell receptors H & L chain piechart",
+       tag = 'BCR (B)'
+       )
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Bcr_H_L_piechart.jpg",plot=mut_bc_,width = 15,height = 10)
+############bcr hsc
+
+##############################################################################TCR
+# 0000 =N    = 0
+# 0001 =C    = 1
+# 0010 =J    = 2
+# 0011 =CJ   = 3
+# 0100 =D    = 4
+# 0101 =DC   = 5
+# 0110 =DJ   = 6
+# 0111 =DJC  = 7
+# 1000 =V    = 8
+# 1001 =VC   = 9
+# 1010 =VJ   = 10
+# 1011 =VJC  = 11
+# 1100 =VD   = 12
+# 1101 =VDC  = 13
+# 1110 =VDJ  = 14
+# 1111 =VDJC = 15
+df_immu_tcr_all$barcode %in% sAML1_bc$barcode
+tcr_bc<- merge(df_immu_tcr_all,sAML1_bc,by="barcode")
+tc_chain<- tcr_bc[,c("barcode","cell_type","chain1","chain2")]
+tc_chain$barcode<- make.names(tc_chain$barcode,unique=T)
+tc_chain<- as.data.frame(tc_chain)
+####chain1
+x<- str_split(tc_chain$chain1,",") 
+tc_chain$ch1_VDJ<- sapply(x,function(a){
+  #a=x[442]
+  #t<- (TRB %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  if (sum(TRA %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+  z=(TRA %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else if (sum(TRB %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+    z=(TRB %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else if (sum(TRD %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+    z=(TRD %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else if (sum(TRG %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+    z=(TRG %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else {
+    z=c(0,0,0,0)
+  }
+  as.numeric(z) %>% as.data.frame()%>% mutate(val=paste0(.[1],.[2],.[3],.[4]))%>% .[1,2] %>% as.numeric()%>%strtoi(.,base = 2)%>% as.character()%>% switch(.,"0"="N","1"="C","2"="J","3"="CJ","4"="D","5"="DC","6"="DJ","7"="DJC","8"="V","9"="VC","10"="VJ","11"="VJC","12"="VD","13"="VDC","14"="VDJ","15"="VDJC")
+}
+ ) 
+#####chain2
+x<- str_split(tc_chain$chain2,",") 
+tc_chain$ch2_VDJ<- sapply(x,function(a){
+  #a=x[442]
+  #t<- (TRB %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  if (sum(TRA %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+  z=(TRA %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else if (sum(TRB %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+    z=(TRB %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else if (sum(TRD %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+    z=(TRD %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else if (sum(TRG %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR..")))!=0){
+    z=(TRG %in% (unlist(a) %>% subset(.,grepl("TR",.))%>% str_extract(.,"TR.."))) 
+  }else {
+    z=c(0,0,0,0)
+  }
+  as.numeric(z) %>% as.data.frame()%>% mutate(val=paste0(.[1],.[2],.[3],.[4]))%>% .[1,2] %>% as.numeric()%>%strtoi(.,base = 2)%>% as.character()%>% switch(.,"0"="N","1"="C","2"="J","3"="CJ","4"="D","5"="DC","6"="DJ","7"="DJC","8"="V","9"="VC","10"="VJ","11"="VJC","12"="VD","13"="VDC","14"="VDJ","15"="VDJC")
+}
+ ) 
+
+#############
+x<- tc_chain %>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ) %>%
+  ggplot(aes(fill = value, y = name, x = barcode)) +
+  geom_tile()+theme(axis.text.x=element_blank())+scale_fill_brewer(palette = "PiYG")+labs(x = "TCRs")
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Tcr_chain.jpg",plot=x,width = 15,height = 10)
+############TCR
+###chain 1
+df<-tc_chain$ch1_VDJ %>% table() %>% as.data.frame()
+chain1_tc<- ggplot(df, aes(x = "", y = Freq, fill = .)) +geom_col(color = "white") +
+  geom_text(aes(label = Freq),position = position_stack(vjust = 0.5)) +coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "BrBG") +theme_void() + labs(title="Chain1 VDJ reccombination",
+       subtitle=paste0("Total number of TCR_ch1 = ",sum(df$Freq)),
+       caption="T-cell receptors chain1 piechart",
+       tag = 'TCR (ab,gd)'
+       )
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Tcr_chain1_piechart.jpg",plot=chain1_tc,width = 15,height = 10)
+####chain2
+df<-tc_chain$ch2_VDJ %>% table() %>% as.data.frame()
+chain2_tc<- ggplot(df, aes(x = "", y = Freq, fill = .)) +geom_col(color = "white") +
+  geom_text(aes(label = Freq),position = position_stack(vjust = 0.5)) +coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "BrBG") +theme_void() + labs(title="Chain2 VDJ reccombination",
+       subtitle=paste0("Total number of TCR_ch2 = ",sum(df$Freq)),
+       caption="T-cell receptors chain2 piechart",
+       tag = 'TCR (ab,gd)'
+       )
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Tcr_chain2_piechart.jpg",plot=chain2_tc,width = 15,height = 10)
+####cells with both chains
+df<- subset(tc_chain,c(ch2_VDJ!="N" & ch1_VDJ!="N"))
+uni_bc1<- df$barcode %>% gsub(".\\d+$","",.)%>% unique()
+uni_bc<- uni_bc1  %>% length()
+df$barcode<- make.names(df$barcode,unique=T)
+df<- df %>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+chain_12_tc<-ggplot(df, aes(x = barcode, y = name, fill = value)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("TCR both chains"," TCRs= ",length(unique(df$barcode) )," Cells= ", uni_bc))+scale_fill_brewer(palette = "RdBu")+labs(x = "TCRs")
+chain_12_tc
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Tcr_chain12_piechart.jpg",plot=chain_12_tc,width = 15,height = 10)
+#######################
+#################################by cell_lineage
+p<-df_immu_tcr_all %>% dplyr::select(barcode,cell_lineage) %>%subset(.,barcode %in% uni_bc1)%>%count("cell_lineage") %>% ggplot(., aes(x=cell_lineage, y=freq, color=cell_lineage)) +geom_bar(stat="identity",fill="white")+labs(title="TCRs by Cell_lineage")+geom_text(aes(label=freq), position=position_dodge(width=0.9), vjust=-0.25)+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),plot.background =  element_rect(fill = "white"),text=element_text(size=12))
+p
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/TCRs_by_Cell_lineage_chain12.jpg",plot=p,width = 15,height = 10)
+########filtering by genotype and cell lineage
+df_immu_tcr<- read_delim("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/saml1_promethion/results/saml1_tcr_genotyped.txt",delim = "\t")
+df<- subset(tc_chain,c(ch2_VDJ!="N" & ch1_VDJ!="N")) #%>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+#df_immu_tcr<- subset(df_immu_tcr,aggregated_lineage==c("HSC_progenitors"))
+df_<- df_immu_tcr[df_immu_tcr$barcode %in% intersect(df_immu_tcr$barcode,df$barcode),] #######intersect=0, there is no TCR with both chains completed in HSC ( all in cd4 memory and gdT cells)
+#df<- subset(bc_chain,ch2_VDJ!="N" & ch1_VDJ!="N") #%>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+#df_immu_tcr<- subset(df_immu_tcr,aggregated_lineage==c("HSC_progenitors"))
+#df_complete<- df_immu_bcr[df_immu_bcr$barcode %in% intersect(df_immu_bcr$barcode,df$barcode),] #######intersect=0, there is no BCR with both chains completed in HSC ( all in cd4 memory and gdT cells)
+x<- df_$cell_lineage %>% count() %>% tibble()
+colnames(x)<- c("Cell_lineage", "Freq")
+mut_bc_<- ggplot(x, aes(x = "", y = Freq, fill = Cell_lineage)) +geom_col(color = "white") +
+  geom_text(aes(label = Freq),position = position_stack(vjust = 0.5)) +coord_polar(theta = "y") +
+  scale_fill_brewer(palette = "PiYG") +theme_void() + labs(title="TCRs with high mut with both A/g & B/d chain",
+       subtitle=paste0("Total number of TCRs = ",sum(x$Freq)," Cells= ",length(unique(df_$barcode))),
+       caption="T-cell receptors A/g & B/d chain piechart",
+       tag = 'TCR'
+       )
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_Tcr_A_B_piechart.jpg",plot=mut_bc_,width = 15,height = 10)
+####################
+######################################genotyped bcrs
+df<- subset(bc_chain,c(ch2_VDJ!="N" & ch1_VDJ!="N")) #%>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+df_<- df_immu_bcr_all[df_immu_bcr_all$barcode %in% intersect(df_immu_bcr_all$barcode,df$barcode),] %>% dplyr::select(c("barcode","cell_lineage","n_mut_pro","genotype"))%>% dplyr::filter(genotype=="genotyped")
+df_$n_mut_pro<- factor(df_$n_mut_pro)
+x<-ggplot(df_, aes(x = barcode, y = cell_lineage, fill = n_mut_pro)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("All_BCR_saml1"," Cells= ",length(unique(df_$barcode))," BCRs= ",length(df_$barcode)))+scale_fill_brewer(palette = "RdBu")
+x
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_bcr_all_genotyped_doublechain.jpg",plot=x,width = 15,height = 10)
+###################
+
+######################################genotyped Tcrs
+df<- subset(tc_chain,c(ch2_VDJ!="N" & ch1_VDJ!="N")) #%>%tidyr::pivot_longer(ch1_VDJ:ch2_VDJ)
+df_<- df_immu_tcr_all[df_immu_tcr_all$barcode %in% intersect(df_immu_tcr_all$barcode,df$barcode),] %>% dplyr::select(c("barcode","cell_lineage","n_mut_pro","genotype"))%>% dplyr::filter(genotype=="genotyped")
+df_$n_mut_pro<- factor(df_$n_mut_pro)
+x<-ggplot(df_, aes(x = barcode, y = cell_lineage, fill = n_mut_pro)) +
+  geom_tile()+theme(axis.text.x=element_blank(),text=element_text(size=12))+ggtitle(paste0("All_TCR_saml1"," Cells= ",length(unique(df_$barcode))," TCRs= ",length(df_$barcode)))+scale_fill_brewer(palette = "RdBu")
+x
+ggsave("/hpcnfs/scratch/PGP/SCMseq/TRUST4_samples/reports/results/saml1_tcr_all_genotyped_doublechain.jpg",plot=x,width = 15,height = 10)
+###################
+
+```
+
