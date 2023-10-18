@@ -1,0 +1,106 @@
+---
+title: "Psisigma"
+author: "Iman Nazari"
+date: "24/05/2023"
+output: html_document
+---
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  fig.width = 10, 
+  fig.height = 5
+)
+defaultW <- getOption("warn")
+options(device = "RStudioGD")
+```
+
+## Loading libraries
+```{r include=FALSE, results='hide'}
+library(devtools)
+library(stringr)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(biomaRt)
+library(IsoformSwitchAnalyzeR)
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(DGEobj.utils)
+library(Biostrings)
+library(msaR)
+library(seqinr)
+library(Seurat)
+library(AnnotationHub)
+library(ensembldb)
+library(edgeR)
+library(SummarizedExperiment)
+library(ggplot2)
+library(DEXSeq)
+library(grDevices)
+library(ggrepel)
+library(tidyverse)
+library(rnaseqDTU)
+library(org.Hs.eg.db)
+library(limma)
+library(DRIMSeq)
+library(tximport)
+library(safejoin)
+library(dplyr)
+library(enrichR)
+library(chimeraviz)
+```
+
+
+
+## Subsampling of cell ids in mut and wt 
+
+```{r eval=FALSE, include=FALSE}
+output=NULL
+
+####subdividing cells for MUT groups of each sample , 3 times , making random cells
+output<- "/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/PSIsigma/subsampling_samplewise_barcode/"
+dir.create(output)
+samples=c("sAML1","AML4","AML5")
+######## round 1:20 MUT
+for (ro in 1:20){
+lapply(samples,function(x){
+  #x="sAML1"
+  r<-read.delim(paste0("/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/isoswitch_result/Drim_seq_no_filtered_geneByORF_and_MAD/cell_ID_xmut_",x,"_HSC_genes.txt"),col.names = "Cell_id")
+  s1<- sample(r$Cell_id, size=length(r$Cell_id)/3, replace =F) %>% as.data.frame()
+  s2<- sample(r$Cell_id[!(r$Cell_id %in% s1$.) ], size=length(r$Cell_id)/3, replace =F)%>% as.data.frame()
+  s3<- r$Cell_id[!(r$Cell_id %in% c(s1$.,s2$.))]%>% as.data.frame()
+  dir.create(paste0(output,x,"_mut"))
+  s1$. %in% s2$. %>% table() %>% print()
+  s2$. %in% s3$. %>% table() %>% print()
+  s1$. %in% s3$. %>% table() %>% print()
+  write_delim(s1,paste0(output,x,"_mut","/","sub_",ro,"_1","_HSC_genes.txt"),col_names = F)
+  write_delim(s2,paste0(output,x,"_mut","/","sub_",ro,"_2","_HSC_genes.txt"),col_names = F)
+  write_delim(s3,paste0(output,x,"_mut","/","sub_",ro,"_3","_HSC_genes.txt"),col_names = F)
+  s1=s2=s3=NULL
+  } )
+}
+
+
+###################################################################################################### sub sampling  wt 2
+s1=s2=NULL
+output<- "/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/PSIsigma/subsampling_samplewise_barcode/"
+dir.create(output)
+samples=c("sAML1","AML4","AML5")
+######## round 1:20 wt
+for (ro in 1:20){
+lapply(samples,function(x){
+  r<-read.delim(paste0("/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/isoswitch_result/Drim_seq_no_filtered_geneByORF_and_MAD/cell_ID_xwt_",x,"_HSC_genes.txt"),col.names = "Cell_id")
+  s1<- sample(r$Cell_id, size=length(r$Cell_id)/2, replace =F) %>% as.data.frame()
+  s2<- r$Cell_id[!(r$Cell_id %in% c(s1$.,s2$.))]%>% as.data.frame()
+  out_p<- paste0(output,x,"_wt")
+  dir.create(out_p)
+  s1$. %in% s2$. %>% table() %>% print()
+  #s2$. %in% s3$. %>% table() %>% print()
+  #s1$. %in% s3$. %>% table() %>% print()
+  write_delim(s1,paste0(out_p,"/","sub_",ro,"_1_wt","_HSC_genes.txt"),col_names = F)
+  write_delim(s2,paste0(out_p,"/","sub_",ro,"_2_wt","_HSC_genes.txt"),col_names = F)
+  #write_delim(s3,paste0(output,x,"/","sub_1_3","_HSC_genes.txt"),col_names = F)
+  } )
+}
+
+```

@@ -1,0 +1,1282 @@
+---
+title: "Psisigma"
+author: "Iman Nazari"
+date: "24/05/2023"
+output: html_document
+---
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  fig.width = 10, 
+  fig.height = 5
+)
+defaultW <- getOption("warn")
+options(device = "RStudioGD")
+```
+
+## Loading libraries
+```{r include=FALSE, results='hide'}
+library(devtools)
+library(stringr)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(biomaRt)
+library(IsoformSwitchAnalyzeR)
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(DGEobj.utils)
+library(Biostrings)
+library(msaR)
+library(seqinr)
+library(Seurat)
+library(AnnotationHub)
+library(ensembldb)
+library(edgeR)
+library(SummarizedExperiment)
+library(ggplot2)
+library(DEXSeq)
+library(grDevices)
+library(ggrepel)
+library(tidyverse)
+library(rnaseqDTU)
+library(org.Hs.eg.db)
+library(limma)
+library(DRIMSeq)
+library(tximport)
+library(safejoin)
+library(dplyr)
+library(enrichR)
+library(chimeraviz)
+```
+
+
+## Splicing sample-wise , analysing results after PSIsigma
+
+```{r}
+library(metapod)
+dbs <- c("GO_Molecular_Function_2018", "GO_Cellular_Component_2018", "GO_Biological_Process_2018","KEGG_2019_Human")
+address <-"/Users/ieo5268/Documents/Thesis_Iman/cluster/reuslts/subSampling_splicing_results/"
+dir.create(paste0(address,"results/splicing"),recursive = T)
+results<- paste0(address,"results/splicing/")
+sample_<-c("sAML1","AML4","AML5")
+re_id<- c("10","3","10")
+names(re_id)<- sample_
+events=c("A3SS","A5SS","IR","MES","SES","TSS|A3SS","TSS|A5SS","gene_evnt_ex" )
+
+```
+
+
+```{r}
+
+sample_all_b <- lapply(sample_,function(sample_x){
+
+  sample_batch <- lapply(1:20,function(x){
+      w<- read_delim(paste0("/Users/ieo5268/Documents/Thesis_Iman/cluster/reuslts/splicing/20epoch_2wt_3mut/",sample_x,"_",x,"/results/splicing_mut_wt_srsf2_HSC_myeloid_r",re_id[sample_x],"_ir3.sorted.txt"))%>% dplyr::filter( `ΔPSI (%)` >1 | `ΔPSI (%)` < -1)
+      
+     w <- w%>% mutate(`ΔPSI (%)` = case_when((`Event Type`=="SES" |`Event Type`=="MES") ~ -1*`ΔPSI (%)`  ,TRUE ~ `ΔPSI (%)`))
+      
+      w <- w%>% mutate(Expression = case_when(`ΔPSI (%)`>1  ~ "UpRegulated",`ΔPSI (%)` < -1 ~ "DownRegulated",TRUE ~ "Not-significant"))
+      w$Expression%>% table()
+     #w <- w%>% mutate(Expression = case_when((`ΔPSI (%)`>1 &(`Event Type`!="SES" &`Event Type`!="MES")) ~ "UpRegulated",(`ΔPSI (%)` < -1 &(`Event Type`!="SES" &`Event Type`!="MES"))~ "DownRegulated",(`ΔPSI (%)`>1 &(`Event Type`=="SES" | `Event Type`=="MES")) ~ "DownRegulated",(`ΔPSI (%)` < -1 &(`Event Type`=="SES" | `Event Type`=="MES"))~ "UpRegulated",TRUE ~ "Not-significant"))
+    
+     w$gene_evnt_ex<- paste0(w$`Gene Symbol`,"_",w$`Target Exon`,"_",w$`Reference Transcript`,"_",w$`Event Type`,"_",w$Expression)
+     #merged_df <- Reduce(function(x, y) merge(x, y, by = c("gene_evnt_ex"), all = TRUE), w)
+     #######
+     w %>% dplyr::select(gene_evnt_ex,`Event Type`)%>%pivot_wider(names_from = `Event Type`, values_from = gene_evnt_ex)
+     w <- w %>%group_by(`Event Type`, gene_evnt_ex) %>%summarize(count = n(),`FDR (BH)`,`ΔPSI (%)`) %>%
+  pivot_wider(names_from = `Event Type`, values_from = count, values_fill = 0)
+     #########
+    # w<- w %>% dplyr::select(gene_evnt_ex,`Event Type`,`FDR (BH)`) %>% group_by(gene_evnt_ex,`FDR (BH)`)%>% table() %>% as.data.frame() %>% pivot_wider(names_from = Event.Type, values_from = Freq) #%>% dplyr::mutate(batch=x)
+     w[is.na(w)]<- 0
+      Missing <- setdiff(events,colnames(w))
+      w[Missing] <- 0
+      
+     return(w)
+    })
+  names(sample_batch)<- c("batch1","batch2","batch3","batch4","batch5","batch6","batch7","batch8","batch9","batch10","batch11","batch12","batch13","batch14","batch15","batch16","batch17","batch18","batch19","batch20")
+ s=list()
+ #sa<- list()
+ for (i in events[1:7]){
+
+   #sample_batch_pv<- sample_batch
+   #selected_data <- map(sample_batch, ~ .[, c("gene_evnt_ex",events[1:7])])
+   s[[i]]<- purrr::reduce(sample_batch,rbind)%>% dplyr::select(gene_evnt_ex,i,`FDR (BH)`,`ΔPSI (%)`)
+   s[[i]]<- s[[i]][s[[i]][2]!=0,]
+   s[[i]]<-s[[i]]%>% group_by(gene_evnt_ex) %>%summarize(FDR_BH_list = list(`FDR (BH)`),deltaPSI= list(`ΔPSI (%)`),Freq = n())
+   
+   s[[i]]<- s[[i]][s[[i]]$Freq !=0,]
+   s[[i]]<- s[[i]][order( s[[i]]$Freq, decreasing = T), ]
+   #s[[i]]$gene_evnt_ex<- factor(s[[i]]$gene_evnt_ex,levels = s[[i]]$gene_evnt_ex)
+   
+   ####
+    r=vector()
+    em_<- cutoff::em(s[[i]]$Freq,"normal","normal",t=0.01)
+   for(f in c(1:20)){left=exp(-(f-em_$param[1])^2/(em_$param[2]^2)); right=exp(-(f-em_$param[3])^2/(em_$param[4]^2)); if(left<right){
+     r<- append(r,f)
+   }}
+    ###############
+    breaks <- c(0:20)
+    t<- ggplot(s[[i]], aes(x=Freq))+ geom_histogram( breaks = breaks, color = 'red',binwidth = 1) +
+     labs(title =paste0(chartr("|",".",i),"_",sample_x), x = "Freq.",y="Number of events",subtitle = paste0("no.events="," ",length(s[[i]]$gene_evnt_ex),"    selected_events="," ",length(s[[i]][s[[i]]$Freq>=min(r),]$Freq)))+geom_text(
+    stat = "bin", aes(label = after_stat(count)),
+    vjust = -0.5, breaks = breaks
+  )+scale_y_log10()+ geom_vline(data=s[[i]],aes(xintercept=min(r)-1))#+scale_x_log10(breaks = breaks)
+t
+ggsave(paste0(results,chartr("|",".",i),"_beforeFiltering_",sample_x,".pdf"),plot = t,width = 8,height = 5)
+   plot(t)
+############
+     s[[i]]<- s[[i]][s[[i]]$Freq>=min(r),]
+    ##########
+   newdf<- data.frame()
+   if (length(s[[i]]$Freq)==1) {
+     newdf<- data.frame(gene_evnt_ex= as.character(s[[i]]$gene_evnt_ex),Freq=s[[i]]$Freq , p_val=unlist(s[[i]]$FDR_BH_list),dPSI=unlist(s[[i]]$deltaPSI))
+   } else if(length(s[[i]]$Freq)>1){
+
+    for (ee in c(1:length(s[[i]]$Freq))){
+      spdt<- s[[i]][ee,]
+      pv <- as.numeric(unlist(spdt$FDR_BH_list))
+      dps<- as.numeric(unlist(spdt$deltaPSI))
+      pv_1<- parallelFisher(as.list(pv))$p.value
+      ddf<- data.frame(gene_evnt_ex= as.character(spdt$gene_evnt_ex),Freq=spdt$Freq , p_val=pv_1,dPSI=mean(dps))
+      if (!any(duplicated(rbind(newdf,ddf)))) {
+    newdf<-rbind(newdf,ddf)
+  }
+      
+    }
+   } else{
+     newdf<- data.frame(gene_evnt_ex= "Nothing significant",Freq=0 , p_val=0,dPSI=0)
+   }
+   
+   
+    table(duplicated(newdf$gene_evnt_ex))
+    newdf<- newdf[order( newdf$Freq, decreasing = T), ]
+   newdf$gene_evnt_ex<- factor(newdf$gene_evnt_ex,levels = newdf$gene_evnt_ex)
+   
+   t<- ggplot(newdf , aes(x=p_val))+ geom_histogram(bins =30) +scale_x_reverse()+labs(title = paste0(chartr("|",".",i),"_p_value_",sample_x))+xlab("P_value")+ylab("number of event")+ geom_vline(xintercept = 0.05, linetype = "dashed", color = "red")
+ggsave(paste0(results,chartr("|",".",i),"_p_value_",sample_x,".pdf"),plot = t,width = 8,height = 5)
+   plot(t)
+   
+   newdf<- newdf[(newdf$p_val<0.1 & abs(newdf$dPSI)>1),]
+    ###
+ breaks <- c(0:20)
+    t<- ggplot(newdf, aes(x=Freq))+ geom_histogram( breaks = breaks, color = 'red',binwidth = 1) +
+     labs(title =paste0(chartr("|",".",i),"_",sample_x),  x = "Freq.",y="Number of events",subtitle = paste0("selected_events="," ",length(newdf[newdf$Freq>=min(r),]$Freq)))+geom_text(
+    stat = "bin", aes(label = after_stat(count)),
+    vjust = -0.5, breaks = breaks
+  )+ geom_vline(data=newdf,aes(xintercept=min(r)-1))#+scale_x_log10(breaks = breaks)
+t
+ggsave(paste0(results,chartr("|",".",i),"_afterFiltering_",sample_x,".pdf"),plot = t,width = 8,height = 5)
+   plot(t)
+ 
+  #############
+  
+   s[[paste0(i,"_filtered")]]<- newdf
+
+ }
+
+return(s)
+  })
+names(sample_all_b)<- sample_
+gene_event<-list()
+for (i in events[1:7]){
+ gene_event$sAML1[[i]]$gene <- sample_all_b$sAML1[[paste0(i,"_filtered")]]$gene_evnt_ex%>% str_split(., "_",n = 2,simplify = T) %>% .[,1] %>%unique()
+ gene_event$AML5[[i]]$gene <- sample_all_b$AML5[[paste0(i,"_filtered")]]$gene_evnt_ex%>% str_split(., "_",n = 2,simplify = T) %>% .[,1]%>%unique()
+ gene_event$AML4[[i]]$gene <- sample_all_b$AML4[[paste0(i,"_filtered")]]$gene_evnt_ex%>% str_split(., "_",n = 2,simplify = T) %>% .[,1]%>%unique()
+}
+####################
+
+########################
+for (i in sample_){
+
+  rb<- rbind(sample_all_b[[i]]$A3SS_filtered,sample_all_b[[i]]$A5SS_filtered,sample_all_b[[i]]$IR_filtered,sample_all_b[[i]]$MES_filtered,sample_all_b[[i]]$`TSS|A3SS_filtered`,sample_all_b[[i]]$SES_filtered,sample_all_b[[i]]$`TSS|A5SS_filtered`)
+  rb_mut<- rb %>% dplyr::filter(gene_evnt_ex %in% rb$gene_evnt_ex[grep("UpRegulated",gene_evnt_ex)])%>% .$gene_evnt_ex %>% str_split(., "_",n = 4,simplify = T) %>% .[,1] %>%unique()
+  rb_wt<-  rb %>% dplyr::filter(gene_evnt_ex %in% rb$gene_evnt_ex[grep("DownRegulated",gene_evnt_ex)])%>% .$gene_evnt_ex %>% str_split(., "_",n = 4,simplify = T) %>% .[,1] %>%unique()
+  #################
+  
+  ################ pathway
+  #######WT
+  
+  enriched <- enrichr(rb_wt, dbs)
+
+  mf<- plotEnrich(enriched[[1]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("DownRegulated_",i,"_","Molecular_Function"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+cc<- plotEnrich(enriched[[2]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("DownRegulated_",i,"_","Cellular_Component"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+bp<- plotEnrich(enriched[[3]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("DownRegulated_",i,"_","Biological_Process"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+KEGG_<- plotEnrich(enriched[[4]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("DownRegulated_",i,"_","KEGG"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+#enrichr(genes = genes_cluster2,databases = "KEGG_2019_Human")
+
+ggsave(plot = mf,path=results,filename  =paste0("DownRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_MF.jpg"),width = 8,height = 5)
+ggsave(plot = cc,path=results,filename  =paste0("DownRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_CC.jpg"),width = 8,height = 5)
+ggsave(plot = bp,path=results,filename  =paste0("DownRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_BP.jpg"),width = 8,height = 5)
+ggsave(plot = KEGG_,path=results,filename  =paste0("DownRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_KEGG.jpg"),width = 8,height = 5)
+################ pathway mut
+
+
+#pathview(gene.data=enriched[[4]]$Genes,pathway.id=enriched[[4]]$Term,species="hsa",out.suffix="gse16873.2layer",kegg.native=F,same.layer=F)
+#MUT
+enriched <- enrichr(rb_mut, dbs)
+  mf<- plotEnrich(enriched[[1]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("UpRegulated_",i,"_","Molecular_Function"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+cc<- plotEnrich(enriched[[2]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("UpRegulated_",i,"_","Cellular_Component"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+bp<- plotEnrich(enriched[[3]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("UpRegulated_",i,"_","Biological_Process"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+KEGG_<- plotEnrich(enriched[[4]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0("UpRegulated_",i,"_","KEGG"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+
+ggsave(plot = mf,path=results,filename  =paste0("UpRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_MF.jpg"),width = 8,height = 5)
+ggsave(plot = cc,path=results,filename  =paste0("UpRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_CC.jpg"),width = 8,height = 5)
+ggsave(plot = bp,path=results,filename  =paste0("UpRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_BP.jpg"),width = 8,height = 5)
+ggsave(plot = KEGG_,path=results,filename  =paste0("UpRegulated_","enrichR","_",chartr("|",".",i),"_","Gene_ontology_KEGG.jpg"),width = 8,height = 5)
+############
+   
+  
+ x1<-unlist(gene_event[[i]])%>% table() %>% names(.)
+  #####
+  enriched <- enrichr(x1, dbs)
+  
+  mf<- plotEnrich(enriched[[1]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0(i,"_","Molecular_Function"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+cc<- plotEnrich(enriched[[2]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0(i,"_","Cellular_Component"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+bp<- plotEnrich(enriched[[3]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0(i,"_","Biological_Process"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+KEGG_<- plotEnrich(enriched[[4]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value",title = paste0(i,"_","KEGG"))+theme(text = element_text(size=10),axis.title.y = element_text(size=4))
+#str(cc)
+ggsave(plot = mf,path=results,filename  =paste0("enrichR","_",chartr("|",".",i),"_","Gene_ontology_MF.jpg"),width = 8,height = 5)
+ggsave(plot = cc,path=results,filename  =paste0("enrichR","_",chartr("|",".",i),"_","Gene_ontology_CC.jpg"),width = 8,height = 5)
+ggsave(plot = bp,path=results,filename  =paste0("enrichR","_",chartr("|",".",i),"_","Gene_ontology_BP.jpg"),width = 8,height = 5)
+ggsave(plot = KEGG_,path=results,filename  =paste0("enrichR","_",chartr("|",".",i),"_","Gene_ontology_KEGG.jpg"),width = 8,height = 5)
+}
+
+###################### coomon gene,events
+
+for (i in events[1:7]){
+ x = list(sAML1=gene_event[["sAML1"]][[i]]$gene, AML4=gene_event[["AML4"]][[i]]$gene,AML5= gene_event[["AML5"]][[i]]$gene)
+ ##
+  t<- ggvenn::ggvenn(x)+labs(title = "Splicing gene overlap",subtitle =paste0(i,"_","Tot: ",sum(length(x$sAML1)+length(x$AML4)+length(x$AML5))))
+  ggsave(paste0(results,chartr("|",".",i),"_","venn_diagram_all_samples",".jpg"),plot = t,width = 8,height = 5)
+  ##
+  name_<- c("intr_m1_m4","intr_m1_m5","intr_m5_m4","intr_m1_m4_m5")
+  inter_names <- c("sAML1_AML4","sAML1_AML5","AML5_AML4","sAML1_AML4_AML5")
+  intersect_list=list()
+  excluded <- Reduce(setdiff, list(x$sAML1, x$AML4, x$AML5))
+  
+  intr_m1_m4<- intersect(x$sAML1,x$AML4) 
+  intersect_list$intr_m1_m4<- setdiff(intr_m1_m4, excluded)
+  
+  intr_m1_m5<- intersect(x$sAML1,x$AML5)
+  intersect_list$intr_m1_m5<- setdiff(intr_m1_m5, excluded)
+  
+  intr_m5_m4<- intersect(x$AML5,x$AML4)
+  intersect_list$intr_m5_m4<- setdiff(intr_m5_m4, excluded)
+  
+  intersect_list$intr_m1_m4_m5<- intersect(intersect_list$intr_m1_m4,intersect_list$intr_m1_m5)
+  
+  for (yy in 1:4){
+    write_csv( data.frame(Gene=intersect_list[[name_[yy]]]),paste0(results,inter_names[yy],"intersect_gene_list","_",chartr("|",".",i),".csv"))
+   
+}
+}
+saveRDS(object = sample_all_b,file = paste0(results,"events_object.RDS"))
+
+```
+
+
+
+## transcript classifications after splicing
+```{r}
+sample_all_b<- readRDS("/Users/ieo5268/Documents/Thesis_Iman/cluster/reuslts/subSampling_splicing_results/results/splicing/events_object.RDS")
+sqanti<- read.delim("/Users/ieo5268/Documents/Thesis_Iman/cluster/reuslts/SQANTI/gffcomare_AML_12345_hBM_123.combined_classification.txt",sep = "\t")
+
+tr<- sample_all_b$sAML1$SES_filtered$gene_evnt_ex %>% str_split(pattern = "_",n = 5,simplify = T)%>% .[,3] %>% str_replace(.,"TCONS.","TCONS_")
+sqanti[sqanti$isoform %in% tr,]$predicted_NMD %>% table()
+sqanti$predicted_NMD %>% table()
+sample_all_b$sAML1$IR_filtered
+
+```
+
+
+
+```{r}
+#############loading the dataframe
+sample_all_b<- readRDS(file = paste0(results,"events_object.RDS"))
+
+#######
+
+#################### sample wise
+for (i in sample_){
+
+  ls<- list(sample_all_b[[i]]$A3SS_filtered %>% dplyr::mutate(event="A3SS"),sample_all_b[[i]]$A5SS_filtered %>% dplyr::mutate(event="A5SS"),sample_all_b[[i]]$IR_filtered %>% dplyr::mutate(event="IR"),sample_all_b[[i]]$MES_filtered %>% dplyr::mutate(event="MES"),sample_all_b[[i]]$SES_filtered %>% dplyr::mutate(event="SES"),sample_all_b[[i]]$`TSS|A3SS_filtered` %>% dplyr::mutate(event="TSS_A3SS"),sample_all_b[[i]]$`TSS|A5SS_filtered` %>% dplyr::mutate(event="TSS_A5SS"))
+#purrr::reduce(ls,rbind)%>% table(ls)
+list_1<-purrr::reduce(ls,rbind) %>% dplyr::select(gene_evnt_ex,event)%>% data.table::melt()
+list_1<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("UpRegulated|DownRegulated",gene_evnt_ex)]) %>% dplyr::count(event)
+
+list_1<-list_1%>%mutate(pct= round(prop.table(n) * 100,2))
+
+lbls1 <- paste0(list_1$event,"(",list_1$n,")"," ",list_1$pct,"%") # add percents to labels
+pdf(paste0(results,i,"_Splicing_event_pie",".pdf"),width = 8,height = 5)
+pie(list_1$pct, labels =lbls1, main=paste0(i," Splicing (",sum(list_1$n),")"))
+dev.off()
+
+######### mut
+list_1<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,event) %>% data.table::melt() 
+list_1<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("UpRegulated",gene_evnt_ex)]) %>% dplyr::count(event)
+list_1<-list_1%>%mutate(pct= round(prop.table(n) * 100,2))
+ 
+lbls1 <- paste0(list_1$event,"(",list_1$n,")"," ",list_1$pct,"%") # add percents to labels
+pdf(paste0(results,i,"_Splicing_event_pie_UpRegulated",".pdf"),width = 8,height = 5)
+pie(list_1$pct, labels =lbls1, main=paste0(i," UpRegulared Splicing (",sum(list_1$n),")"))
+dev.off()
+######## wt
+list_1<-purrr::reduce(ls,rbind) %>% dplyr::select(gene_evnt_ex,event)%>% data.table::melt() 
+list_1<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("DownRegulated",gene_evnt_ex)])%>% dplyr::count(event)
+list_1<-list_1%>%mutate(pct= round(prop.table(n) * 100,2))
+ 
+lbls1 <- paste0(list_1$event,"(",list_1$n,")"," ",list_1$pct,"%") # add percents to labels
+pdf(paste0(results,i,"_Splicing_event_pie_DownRegulated",".pdf"),width = 8,height = 5)
+pie(list_1$pct, labels =lbls1, main=paste0(i," DownRegulated Splicing (",sum(list_1$n),")"))
+dev.off()
+### mut vs wt SES and MES
+list_1<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,event) %>% data.table::melt() 
+list_1<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("UpRegulated",gene_evnt_ex)]) %>% dplyr::count(event)%>% dplyr::filter(event=="SES")%>% mutate(Group="UpRegulated")
+#list_1<-list_1%>%mutate(pct= round(prop.table(n) * 100,2))
+
+list_2<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,event) %>% data.table::melt() 
+list_2<- list_2%>%dplyr::filter(gene_evnt_ex %in% list_2$gene_evnt_ex[grep("DownRegulated",gene_evnt_ex)]) %>% dplyr::count(event)%>% dplyr::filter(event=="SES")%>% mutate(Group="DownRegulated")
+a<-rbind(list_1,list_2)
+
+a<-a%>%mutate(pct= round(prop.table(n) * 100,2))
+ 
+lbls1 <- paste0(a$event,"_",a$Group,"(",a$n,")"," ",a$pct,"%") # add percents to labels
+pdf(paste0(results,i,"_Splicing_event_pie_SES_wt_mut",".pdf"),width = 8,height = 5)
+pie(a$pct, labels =lbls1, main=paste0(i," Exon Skipping events (",sum(a$n),")"),col = c("#330099","#CC9900"))
+dev.off()
+
+}
+#################### event-wise
+for (i in events[1:7]){
+
+  x<- paste0(i,"_filtered")
+  ls<-list(sAML1=sample_all_b$sAML1[[x]]%>%dplyr::mutate(sample="sAML1"),AML5=sample_all_b$AML5[[x]]%>%dplyr::mutate(sample="AML5"),AML4=sample_all_b$AML4[[x]]%>%dplyr::mutate(sample="AML4"))
+ 
+list_1<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,sample) %>% data.table::melt() 
+list_1<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("UpRegulared|DownRegulated",gene_evnt_ex)]) %>% dplyr::count(sample)
+
+list_1<-list_1%>%mutate(pct= round(prop.table(n) * 100,2))
+
+lbls1 <- paste0(list_1$sample,"(",list_1$n,")"," ",list_1$pct,"%") # add percents to labels
+pdf(paste0(results,chartr("|",".",i),"_Splicing_event_pie",".pdf"),width = 8,height = 5)
+pie(list_1$pct, labels =lbls1, main=paste0(i," Splicing (",sum(list_1$n),")"))
+dev.off()
+
+
+}
+####### how many times each gene came out based on the events in each sample
+cm_g<-lapply (sample_,function(i) {
+gene_names <- list()
+xdf<- sample_all_b[[i]][grep("filtered",names(sample_all_b[[i]]))]
+s<-lapply (xdf,function(df) {
+  # Extract the gene names from the "gene_evnt_ex" column
+  gene_names_df <- sub("_.*", "", df$gene_evnt_ex)
+  # Add the gene names to the list
+  gene_names <- c(gene_names, gene_names_df)
+  gene_count <- table(unlist(gene_names))
+sorted_gene_count <- sort(gene_count, decreasing = TRUE) %>% as.data.frame() 
+})
+merged_df <- bind_rows(s)
+gn<- merged_df[order(merged_df$Freq,decreasing = T), ] %>% head(.,30)
+gn$Sample<- i
+return(gn)
+})
+
+names(cm_g)<- sample_
+# Count the occurrences of each gene name
+merged_df <- bind_rows(cm_g)%>% dplyr::select(Var1,Freq,Sample)%>% dplyr::filter(Freq>0)
+#merged_df <- merged_df[-(83),]
+
+p<- ggplot(merged_df, aes(x =Var1, y = Sample, fill = Freq)) +
+  geom_point(shape = 21, size = 6,na.rm = TRUE,position = position_dodge()) +
+  scale_fill_gradient(low = "blue", high = "red", na.value = NA) +
+  labs(x = "", y = "Sample", fill = "Freq") +
+  ggtitle("Gene hits") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 12),axis.text.y = element_text( size = 14))+ coord_flip()
+
+ggsave(paste0(results,"Gene_hits.jpg"),plot = p,width = 15,height = 15)
+```
+
+
+
+
+
+## comon pathways
+```{r}
+#dbs <- c("KEGG_2019_Human")
+#dbs <- c("GO_Molecular_Function_2018")
+dbs<- c("GO_Biological_Process_2018")
+
+####################### making dataframe for pathway analysis
+BF<-lapply(sample_,function(i){
+  rb<- rbind(sample_all_b[[i]]$A3SS_filtered,sample_all_b[[i]]$A5SS_filtered,sample_all_b[[i]]$IR_filtered,sample_all_b[[i]]$MES_filtered,sample_all_b[[i]]$`TSS|A3SS_filtered`,sample_all_b[[i]]$SES_filtered,sample_all_b[[i]]$`TSS|A5SS_filtered`)
+  
+  rb_mut<- rb %>% dplyr::filter(gene_evnt_ex %in% rb$gene_evnt_ex[grep("UpRegulated",gene_evnt_ex)])%>% .$gene_evnt_ex %>% str_split(., "_",n = 4,simplify = T) %>% .[,1] %>%unique()
+ 
+   rb_wt<-  rb %>% dplyr::filter(gene_evnt_ex %in% rb$gene_evnt_ex[grep("DownRegulated",gene_evnt_ex)])%>% .$gene_evnt_ex %>% str_split(., "_",n = 4,simplify = T) %>% .[,1] %>%unique()
+  #################
+  enriched_wt <- enrichr(rb_wt, dbs)
+  enriched_mut <- enrichr(rb_mut, dbs)
+  a=1
+   enriched_wt[[a]]$source <- i
+   enriched_wt[[a]]$sample<- paste0(i,"_DownRegulated")
+   enriched_wt[[a]]<- arrange(enriched_wt[[a]],"Adjusted.P.value")
+   
+   
+   enriched_mut[[a]]$source <- i
+   enriched_mut[[a]]$sample<- paste0(i,"_UpRegulated")
+   enriched_mut[[a]]<- arrange(enriched_mut[[a]],"Adjusted.P.value")
+  
+  wt<- purrr::reduce(enriched_wt,rbind)
+  wt<- wt%>%dplyr::filter(Adjusted.P.value<0.1)%>%arrange(Adjusted.P.value)
+  wt<-  head(wt,20)
+  mut<- purrr::reduce(enriched_mut,rbind)
+  mut<- mut%>%dplyr::filter(Adjusted.P.value<0.1)%>%arrange(Adjusted.P.value)
+  mut<- head(mut,20)
+   ls<- list(wt,mut)
+   
+   ls2<- purrr::reduce(ls,rbind)
+  
+  return(ls2)
+}
+)
+names(BF)<- sample_
+library(ComplexHeatmap)
+library(circlize)
+
+###############
+
+
+############
+
+matr<- purrr::reduce(BF,rbind) %>% dplyr::select(Term,Adjusted.P.value,sample) %>% pivot_wider(values_from =Adjusted.P.value, names_from =sample)
+#######
+# data_long$Adj.Pval<- round(data_long$Adj.Pval,digits = 7)
+# sort(data_long$Adj.Pval)
+# search_number <- 0.0000056
+# matching_rows <- grepl(paste0("\\b", search_number, "\\b"), data_long$Adj.Pval)
+# data_long[data_long$Adj.Pval==0.0000056,]
+# data_long_t[252,]
+# # Extract the rows with the matching number
+# matching_values <- data_long$Adj.Pval[matching_rows]
+
+# Print the matching values
+# print(matching_values)
+##### dot plot 
+##################
+
+# Add a new column for the rank of p-values
+
+data_long <- tidyr::gather( matr,Sample, Adjusted.P.value,-Term)
+data_long$Rank <- rank(data_long$Adjusted.P.value)
+data_long<-data_long%>%arrange(Adjusted.P.value)%>% dplyr::filter(Adjusted.P.value<0.1)
+
+data_long$Term <- factor(data_long$Term, levels = unique(data_long$Term)[order(data_long$Rank)])
+data_long$Sample <- factor(data_long$Sample, levels = c("sAML1_DownRegulated", "AML5_DownRegulated", "AML4_DownRegulated","sAML1_UpRegulated", "AML5_UpRegulated", "AML4_UpRegulated"))
+p <- ggplot(data_long, aes(x =Term, y = Sample, fill = Adjusted.P.value)) +
+  geom_point(shape = 21, size = 4,na.rm = TRUE) +
+  scale_fill_gradient(low = "blue", high = "red", na.value = NA) +
+  labs(x = "", y = "Sample", fill = "Adjusted.P.value") +
+  ggtitle("EnrichR Pathway Analysis") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10),axis.text.y = element_text( size = 12))+ coord_flip()
+
+plot(p)
+#ggsave(paste0(results,"all_MF_point.jpg"),plot = p,width = 15,height = 15)
+#ggsave(paste0(results,"all_KEGG_point.jpg"),plot = p,width = 15,height = 15)
+ggsave(paste0(results,"all_BP_point.jpg"),plot = p,width = 15,height = 15)
+```
+## pathway analysis alternative test
+### using another tools for PATHWAy analysis
+```{r}
+library(enrichR)
+library(ComplexHeatmap)
+library(circlize)
+library(DOSE)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library('biomaRt')
+library(enrichplot)
+library(clusterProfiler)
+library(GOSemSim)
+library(annotables)
+library(gprofiler2)
+results<- "/Users/ieo5268/Documents/Thesis_Iman/cluster/reuslts/subSampling_splicing_results/results/splicing/Full_summary/"
+dir.create(results_motif)
+#hsGO <- godata('org.Hs.eg.db', ont="MF")
+ensembl=useMart("ensembl")
+ensembl_d = useDataset("hsapiens_gene_ensembl",mart=ensembl)
+
+for (i in samples){
+  rb<- rbind(sample_all_b[[i]]$A3SS_filtered,sample_all_b[[i]]$A5SS_filtered,sample_all_b[[i]]$IR_filtered,sample_all_b[[i]]$MES_filtered,sample_all_b[[i]]$`TSS|A3SS_filtered`,sample_all_b[[i]]$SES_filtered,sample_all_b[[i]]$`TSS|A5SS_filtered`)
+rb_mut<- rb %>% dplyr::filter(gene_evnt_ex %in% rb$gene_evnt_ex[grep("UpRegulated",gene_evnt_ex)])%>% .$gene_evnt_ex %>% str_split(., "_",n = 4,simplify = T) %>% .[,1] %>%unique()
+rb_wt<-  rb %>% dplyr::filter(gene_evnt_ex %in% rb$gene_evnt_ex[grep("DownRegulated",gene_evnt_ex)])%>% .$gene_evnt_ex %>% str_split(., "_",n = 4,simplify = T) %>% .[,1] %>%unique()
+x<- list(rb_mut,rb_wt)
+names(x)<- c("UpRegulated","DownRegulated")
+
+for (s in c("UpRegulated","DownRegulated")){
+  s="DownRegulated"
+  gostres_w <- gost(query = x[[s]], 
+                organism = "hsapiens", ordered_query = FALSE, 
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                measure_underrepresentation = FALSE, evcodes = FALSE, 
+                user_threshold = 0.2, correction_method = "g_SCS", 
+                domain_scope = "annotated", custom_bg = NULL, 
+                numeric_ns = "", sources = NULL, as_short_link = FALSE, highlight = TRUE)
+  
+  p1<- gostplot(gostres, capped = T, interactive = F)
+  p1<- p1+theme(text = element_text(size = 10))
+  p1
+  ggsave(paste0(results,s,"_gosplot_.","jpg"),plot = p1,width = 15,height = 7)
+
+  ############
+  
+  G_list <- getBM(attributes = c('entrezgene_id','hgnc_symbol',"ensembl_gene_id"), filters = 'hgnc_symbol', values =x[[s]], mart = ensembl_d)
+  enr_bp<-enrichGO(gene = G_list$entrezgene_id, OrgDb= org.Hs.eg.db, ont = "BP",pAdjustMethod = "BH",pvalueCutoff  = 0.1,qvalueCutoff  = 0.2, readable= TRUE)
+  enr_cc<-enrichGO(gene = G_list$entrezgene_id, OrgDb= org.Hs.eg.db, ont = "CC",pAdjustMethod = "BH",pvalueCutoff  = 0.1,qvalueCutoff  = 0.2, readable= TRUE)
+  enr_mf<-enrichGO(gene = G_list$entrezgene_id, OrgDb= org.Hs.eg.db, ont = "MF",pAdjustMethod = "BH",pvalueCutoff  = 0.1,qvalueCutoff  = 0.2, readable= TRUE)
+  a1<- barplot(enr_cc)+ labs(subtitle = paste0("Enriched_GO_","CC"))
+  a2<- barplot(enr_bp)+ labs(subtitle = paste0("Enriched_GO_","BP"))
+  a3<- barplot(enr_mf)+ labs(subtitle = paste0("Enriched_GO_","MF"))
+
+  q<-cowplot::plot_grid( a1,a2,a3, ncol=3)
+  ggsave(paste0(results,s,"_enriched_GO_123_",".jpg"),plot = q,width = 30,height = 7)
+  
+  kk <- enrichKEGG(gene = G_list$entrezgene_id,organism   = 'hsa', pvalueCutoff = 0.1)
+  edox <- setReadable(kk, 'org.Hs.eg.db', 'ENTREZID')
+  a1<- dotplot(edox)
+  a2<- cnetplot(edox, categorySize="geneNum")
+  q<-cowplot::plot_grid( a1,a2, ncol=2)
+  ggsave(paste0(results,s,"_KEGG_",".jpg"),plot = q,width = 18,height = 7)
+  
+  pdf(paste0(results,s,"_enrichedGO_BP_",".pdf"),width = 12,height = 12)
+  plotGOgraph(enr_bp)
+  dev.off()
+}}
+```
+
+
+## 3 new AML srsf2wt samples
+
+```{r}
+library(see)
+## reading the dataframe
+adf<-read.csv("/Volumes/scratch/PGP/SCMseq/scRNA_analysis_ongoing/BC_meta_full_dataset.csv",stringsAsFactors = F)
+samples_ne=c("AML2","AML3","hBM1","hBM2","hBM3")
+for (i in samples_ne){
+  ndf<-adf %>% dplyr::filter(sample==i)  
+ndf$barcode<- str_split(ndf$barcode,pattern = "-",n = 2,simplify = T)[,1]
+dir.create(paste0("/Volumes/scratch/PGP/SCMseq/AML_3wtSample/",i))
+write_delim(as.data.frame(ndf$barcode),paste0("/Volumes/scratch/PGP/SCMseq/AML_3wtSample/",i,"/short_bardcodes.txt"),col_names = F)
+bc_<- ndf%>% dplyr::filter(aggregated_lineage %in% c("Early_myeloid","HSC_progenitors","Late_myeloid")) %>% dplyr::select(barcode)
+write_delim(as.data.frame(bc_$barcode),paste0("/Volumes/scratch/PGP/SCMseq/AML_3wtSample/",i,"/ErlyLateHSC_barcode.txt"),col_names = F)
+}
+
+AML2<-adf %>% dplyr::filter(sample=="AML2") %>% dplyr::group_by(aggregated_lineage) %>% summarize(count=n())%>% mutate(sample="AML2")
+AML3<-adf %>% dplyr::filter(sample=="AML3") %>% dplyr::group_by(aggregated_lineage) %>% summarize(count=n())%>% mutate(sample="AML3")
+hBM1<-adf %>% dplyr::filter(sample=="hBM1") %>% dplyr::group_by(aggregated_lineage) %>% summarize(count=n())%>% mutate(sample="hBM1")
+hBM2<-adf %>% dplyr::filter(sample=="hBM2") %>% dplyr::group_by(aggregated_lineage) %>% summarize(count=n())%>% mutate(sample="hBM2")
+hBM3<-adf %>% dplyr::filter(sample=="hBM3") %>% dplyr::group_by(aggregated_lineage) %>% summarize(count=n())%>% mutate(sample="hBM3")
+br<- bind_rows(AML2,AML3,hBM1,hBM2,hBM3) %>% as.data.frame()
+tt<- data.frame(Group=c("AML2","AML3","hBM1","hBM2","hBM3"),Tot.=c(sum(br[br$sample=="AML2",]$count),sum(br[br$sample=="AML3",]$count),sum(br[br$sample=="hBM1",]$count),sum(br[br$sample=="hBM2",]$count),sum(br[br$sample=="hBM3",]$count)))
+
+br <- br %>%group_by(sample) %>%mutate(percentage = (count / sum(count)) * 1)
+#br <- br %>%group_by(sample)%>% mutate(Tot_pct= 100)
+
+p<- ggplot(br, aes(fill=aggregated_lineage, y=percentage, x=sample)) +
+	geom_bar(position="stack", stat="identity") +
+	#geom_text(data=tt, aes(x=Group, label=Tot., y=Tot., fill=NULL), nudge_y=200) +
+  geom_text(aes(label = paste0(round(percentage *100, 1), "% " ,"(",count,")")), position = position_stack(vjust = 0.5), color = "black",size=3)+
+    labs(x ="Group" , y = "N.cells (%)")+scale_fill_material_d()+theme_modern()+scale_y_continuous(labels = scales::percent)+
+    ggtitle(paste0("Percentage of cell lineage "))+theme(text=element_text(size=18),axis.text.x = element_text(angle = 45, vjust = 0.5))
+
+ggsave(filename = paste0("/Volumes/scratch/PGP/SCMseq/AML_3wtSample/","Percentage_of_cell_lineage.jpg"),plot =p,width = 10,height = 8 )
+
+### cell cycle
+AML2<-adf %>% dplyr::filter(sample=="AML2") %>% dplyr::group_by(cell_cycle_seurat) %>% summarize(count=n())%>% mutate(sample="AML2")
+AML3<-adf %>% dplyr::filter(sample=="AML3") %>% dplyr::group_by(cell_cycle_seurat) %>% summarize(count=n())%>% mutate(sample="AML3")
+hBM1<-adf %>% dplyr::filter(sample=="hBM1") %>% dplyr::group_by(cell_cycle_seurat) %>% summarize(count=n())%>% mutate(sample="hBM1")
+hBM2<-adf %>% dplyr::filter(sample=="hBM2") %>% dplyr::group_by(cell_cycle_seurat) %>% summarize(count=n())%>% mutate(sample="hBM2")
+hBM3<-adf %>% dplyr::filter(sample=="hBM3") %>% dplyr::group_by(cell_cycle_seurat) %>% summarize(count=n())%>% mutate(sample="hBM3")
+br<- bind_rows(AML2,AML3,hBM1,hBM2,hBM3) %>% as.data.frame()
+tt<- data.frame(Group=c("AML2","AML3","hBM1","hBM2","hBM3"),Tot.=c(sum(br[br$sample=="AML2",]$count),sum(br[br$sample=="AML3",]$count),sum(br[br$sample=="hBM1",]$count),sum(br[br$sample=="hBM2",]$count),sum(br[br$sample=="hBM3",]$count)))
+
+br <- br %>%group_by(sample) %>%mutate(percentage = (count / sum(count)) * 1)
+
+
+p<- ggplot(br, aes(fill=cell_cycle_seurat, y=percentage, x=sample)) +
+	geom_bar(position="stack", stat="identity")  +
+  geom_text(aes(label = paste0(round(percentage*100, 1), "% " ,"(",count,")")), position = position_stack(vjust = 0.5), color = "black",size=3)+
+    labs(x ="Group" , y = "N.cells (%)")+scale_fill_material_d()+theme_modern()+scale_y_continuous(labels = scales::percent)+
+    ggtitle(paste0("Percentage of cell cycle "))+theme(text=element_text(size=18),axis.text.x = element_text(angle = 45, vjust = 0.5))
+
+ggsave(filename = paste0("/Volumes/scratch/PGP/SCMseq/AML_3wtSample/","Percentage_of_cell_cycle.jpg"),plot =p,width = 10,height = 8 )
+```
+
+
+
+## GFF to GTF
+
+
+```{r} 
+
+#####GFF to GTF for new samples
+samplelist=c("AML2","AML3","hBM1","hBM2","hBM3")
+for (ii in 1:length(samplelist)){
+  print(samplelist[ii])
+  gff <- rtracklayer::import(paste0("/hpcnfs/scratch/PGP/SCMseq/AML_3wtSample/",samplelist[ii],"/FLAMES_out/isoform_annotated.filtered.gff3"))
+  head(gff)
+  gff <- as.data.frame(gff) %>%
+    separate(transcript_id, into = c('transcript_id', 'stuff'), sep = 'transcript:') %>%
+    dplyr::select(-stuff) %>%
+    separate(exon_id, into = c('stuff', 'exon_id'), sep = 'exon:') %>%
+    dplyr::select(-stuff) %>% 
+    dplyr::rename('isoform_id' = 'transcript_id') %>%
+    dplyr::select(c('seqnames', 'start', 'end', 'width', 'strand', 
+                    'source', 'type', 'ID', 
+                    'gene_id', 'isoform_id', 'exon_id', 'rank'))
+  
+  gr <- makeGRangesFromDataFrame(gff,
+                                 seqnames.field = 'seqnames',
+                                 start.field="start",
+                                 end.field="end",
+                                 strand.field="strand",
+                                 keep.extra.columns=TRUE)
+  
+  ### Map regions to gene
+  geneRanges <- function(db, column="gene_id") {
+    g <- GenomicFeatures::genes(db, columns=column)
+    col <- mcols(g)[[column]]
+    genes <- granges(g)[rep(seq_along(g), elementNROWS(col))]
+    mcols(genes)[[column]] <- as.character(unlist(col))
+    genes
+  }
+  
+  gns <- geneRanges(TxDb.Hsapiens.UCSC.hg38.knownGene, column="gene_id")
+  
+  splitByOverlap <- function(query, subject, column="gene_id", ...) {
+    olaps <- findOverlaps(query, subject, ...)
+    f1 <- factor(subjectHits(olaps),
+                 levels=seq_len(subjectLength(olaps)))
+    splitAsList(mcols(query)[[column]][queryHits(olaps)], f1)
+  }
+  
+  gene_region <- splitByOverlap(gns, gr, "gene_id") 
+  gene_region <- paste(gene_region, collapse=", ")
+  
+  gff <- cbind(gff, gene_region)
+  
+  gff <- gff %>% separate(gene_region, into = c('gene_region', 'alternative'), sep = ',') 
+  gff <- gff %>% rownames_to_column(var = 'index')
+  
+  ### Handle unmapped regions 
+  unmapped <- gff %>% dplyr::filter(gene_region == '') #could not associate some ranges to gene regions
+  gff <- gff %>% dplyr::filter(gene_region != '') 
+  gff$gene_region <- factor(gff$gene_region, levels = unique(gff$gene_region))
+  
+  gff_new <- data.frame()
+  for (i in unique(gff$gene_region)) {
+    x = gff %>% dplyr::filter(gene_region == i)
+    x = x %>% mutate(gene_id = rep(gene_id[1], nrow(x)))
+    gff_new = bind_rows(x, gff_new)
+  }
+  
+  unmapped2 <- gff_new %>% dplyr::filter(is.na(gene_id))
+  unmapped <- rbind(unmapped, unmapped2)
+  
+  gff_new <- gff_new %>%
+    dplyr::filter(!is.na(gene_id)) %>%
+    separate(gene_id, into = c('gene_id', 'stuff'), sep = 15, extra = 'merge')
+  
+  gff_new$gene_name = AnnotationDbi::mapIds(org.Hs.eg.db::org.Hs.eg.db,
+                                            keys = gff_new$gene_id, #Column containing query gene ids
+                                            column = "SYMBOL",
+                                            keytype = "ENSEMBL",
+                                            multiVals = 'first')
+  
+  gff_new <- gff_new %>% 
+    unite(gene_id, c('gene_id', 'stuff'), sep = '', remove = T)
+  
+  unmapped3 <- gff_new[which(is.na(gff_new$gene_name)),]
+  unmapped <- unmapped %>% mutate(gene_name = NA)
+  unmapped <- rbind(unmapped, unmapped3)
+  
+  gff <- gff_new %>% 
+    dplyr::filter(!is.na(gene_name))
+  
+  ### Collapse
+  gff$gene_name <- factor(gff$gene_name, levels = unique(gff$gene_name))
+  
+  gff_2 <- data.frame()
+  for (i in levels(gff$gene_name)) {
+    x = gff %>% dplyr::filter(gene_name == i) %>%
+      fill(isoform_id, .direction = "down")
+    gff_2 = bind_rows(x, gff_2)
+  }
+  
+  gff_ready <- gff_2
+  
+  #########################################
+  
+  ###Troubleshoot and add unmapped annotations
+  # map again ranges to genes, using a different method (biomaRt::getBM())
+  to_map <- unmapped[which(unmapped$type == 'gene'),]
+  
+  regions <- paste(to_map$seqnames, to_map$start, to_map$end, paste0(to_map$strand, 1), sep=":") %>%
+    as.data.frame()
+  regions <- regions %>% separate('.', into = c('discard', 'keep'), sep = 'chr')
+  regions <- as.list(regions$keep)
+  
+  hsapiens.anno <- useEnsembl(biomart = "genes", 
+                              dataset = "hsapiens_gene_ensembl")
+  
+  df1 <- data.frame()
+  
+  for (i in regions) {
+    ranges = print(i)
+    x = getBM(
+      attributes = c("hgnc_symbol", "chromosome_name", 
+                     "start_position", "end_position", "strand"),
+      filters = c("chromosomal_region"),
+      values=ranges,
+      mart=hsapiens.anno,
+      uniqueRows = T,
+      useCache = T
+    )
+    x <- x %>% mutate(chromosome_name = as.character(chromosome_name))
+    if (nrow(x) == 0) {
+      
+      x = data.frame(
+        hgnc_symbol = NA,
+        chromosome_name = NA,
+        start_position = NA,
+        end_position = NA,
+        strand = NA
+      )
+      
+    } else {
+      x = x
+    }
+    x = cbind(ranges, x) 
+    df1 = bind_rows(x, df1)
+  }
+  
+  unmapped_remapped <- df1
+  
+  unmapped <- unmapped %>%
+    mutate(ranges = paste(unmapped$seqnames, unmapped$start, unmapped$end, paste0(unmapped$strand, 1), sep=":") ) %>%
+    separate(ranges, into = c('discard', 'ranges'), sep = 'chr') %>%
+    dplyr::select(-'discard')
+  
+  new <- full_join(unmapped, unmapped_remapped, by = c('ranges', 'start' = 'start_position', 'end' = 'end_position'))
+  new <- new %>% dplyr::filter(!is.na(new$index))
+  new <- new %>% distinct(index, .keep_all = T)
+  
+  new <- new %>% mutate(gene_name = hgnc_symbol) %>%
+    dplyr::select(-c('hgnc_symbol', 'chromosome_name', 'strand.y', 'ranges'))
+  
+  colnames(new)[6] <- 'strand'
+  
+  identical(colnames(new), colnames(gff_ready)) # needs to be TRUE
+  
+  # fill gene_id and isoform_id, down
+  
+  new <- new %>% 
+    fill(gene_id, .direction = "down") 
+  
+  new$gene_id <- factor(new$gene_id, levels = unique(new$gene_id))
+  
+  new_2 <- data.frame()
+  for (i in levels(new$gene_id)) {
+    x = new %>% dplyr::filter(gene_id == i) %>%
+      fill(isoform_id, .direction = "down")
+    new_2 = rbind(x, new_2)
+  }
+  
+  gff_ready <- rbind(gff_ready, new_2)
+  
+  gff_ready <- gff_ready[,c('seqnames', 'start', 'end', 'width', 'strand', 
+                            'source', 'type', 'gene_id', 'isoform_id',  'gene_name')]
+  
+  colnames(gff_ready)[9] <- 'transcript_id'
+  head(gff_ready)
+  rtracklayer::export(gff_ready, paste0("/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/GTF_FASTA/",samplelist[ii],"ErlyLateHSC_.gtf"), format = 'gtf')
+}
+
+
+
+
+```
+
+
+
+
+
+```{r}
+##check GTF files and merged one
+samplelist=c("AML2","AML3","hBM1","hBM2","hBM3")
+sample_=c("sAML1","AML4","AML5")
+gtf_all1<- lapply(sample_,function(x){
+  rtracklayer::import(paste0("/Volumes/scratch/PGP/SCMseq/isoform_analysis/GTF_FASTA/",x,"_promethion_all_iso.gtf")) %>% as.data.frame() %>%
+    dplyr::filter(type=="transcript")%>% dplyr::select(gene_id,transcript_id)
+} )
+names(gtf_all1)<- sample_
+####
+gtf_all2<- lapply(samplelist,function(x){
+  rtracklayer::import(paste0("/Volumes/scratch/PGP/SCMseq/isoform_analysis/GTF_FASTA/",x,"ErlyLateHSC_.gtf")) %>% as.data.frame() %>%
+    dplyr::filter(type=="transcript")%>% dplyr::select(gene_id,transcript_id)
+} )
+names(gtf_all2)<- samplelist
+
+gtf_merged1 <- rtracklayer::import("/Volumes/scratch/PGP/SCMseq/isoform_analysis/GTF_FASTA/gffcomare.combined.gtf") %>% as.data.frame() %>%
+    dplyr::filter(type=="transcript")
+gtf_merged2 <- rtracklayer::import("/Volumes/scratch/PGP/SCMseq/isoform_analysis/GTF_FASTA/gffcomare_AML_12345_hBM_123.combined.gtf") %>% as.data.frame() %>%
+    dplyr::filter(type=="transcript")
+
+df<- data.frame(sAML1=c(length(gtf_all1$sAML1$gene_id %>% unique()),length(gtf_all1$sAML1$transcript_id)),
+                AML5=c(length(gtf_all1$AML5$gene_id %>% unique()),length(gtf_all1$AML5$transcript_id)),
+                AML4=c(length(gtf_all1$AML4$gene_id %>% unique()),length(gtf_all1$AML4$transcript_id)),
+                AML2=c(length(gtf_all2$AML2$gene_id %>% unique()),length(gtf_all2$AML2$transcript_id)),
+                AML3=c(length(gtf_all2$AML3$gene_id %>% unique()),length(gtf_all2$AML3$transcript_id)),
+                hBM1=c(length(gtf_all2$hBM1$gene_id %>% unique()),length(gtf_all2$hBM1$transcript_id)),
+                hBM2=c(length(gtf_all2$hBM2$gene_id %>% unique()),length(gtf_all2$hBM2$transcript_id)),
+                hBM3=c(length(gtf_all2$hBM3$gene_id %>% unique()),length(gtf_all2$hBM3$transcript_id)),
+                Merge=c(length(gtf_merged2$gene_id %>% unique()),length(gtf_merged2$transcript_id)))
+rownames(df)<- c("G.length","Tr.length")
+
+write.csv(df,"/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/GTF_FASTA/merging_results_all_AML_12345_hBM_123.csv",row.names = rownames(df),col.names = colnames(df))
+
+```
+
+
+## DEseq after salmon quantification
+```{r}
+library(pcaExplorer)
+library("pheatmap")
+library("RColorBrewer")
+library(corrplot)
+library(DESeq2)
+##### loading isoforms from splicing 
+sample_all_b <- readRDS(file = paste0(results,"events_object.RDS"))
+result_deseq<- "/Users/ieo5268/Documents/Thesis_Iman/cluster/reuslts/subSampling_splicing_results/DEseq/" 
+dir.create(result_deseq,recursive = T)
+new_sal="/Users/ieo5268/Documents/Thesis_Iman/cluster/salmon_quantification/result/"
+salmonDf <- IsoformSwitchAnalyzeR::prepareSalmonFileDataFrame(parentDir = new_sal
+)
+#c("wt_srsf2","wt_srsf2","mut","wt","mut","wt","hBM","hBM","hBM","mut","wt")
+salmonDf$condition <- c("AML","AML","AML","AML","AML","AML","BM","BM","BM","AML","AML")
+salmonDf$condition<- factor(salmonDf$condition,levels = c("AML","BM"))
+salmonDf$batch <- c("AML2","AML3","AML4","AML4","AML5","AML5","hBM1","hBM2","hBM3","sAML1","sAML1")
+salmonDf$batch<- factor(salmonDf$batch,levels = c("AML2","AML3","AML4","AML5","hBM1","hBM2","hBM3","sAML1"))
+salmonDf$genotype <- c("wt","wt","mut","wt","mut","wt","wt","wt","wt","mut","wt")
+salmonDf$genotype<- factor(salmonDf$genotype,levels = c("wt","mut"))
+salmonDf$names <- c("AML2","AML3","AML4_mut","AML4_wt","AML5_mut","AML5_wt","hBM1","hBM2","hBM3","sAML1_mut","sAML1_wt")
+salmonDf$names<- factor(salmonDf$names,levels = c("AML2","AML3","AML4_mut","AML4_wt","AML5_mut","AML5_wt","hBM1","hBM2","hBM3","sAML1_mut","sAML1_wt"))
+salmonDf1<- salmonDf
+files1<- salmonDf1$files
+names(files1)<- salmonDf1$names
+salmonDf
+######rnsseq dtu
+
+txi1 <- tximport::tximport(files1, type="salmon", txOut=TRUE,countsFromAbundance="no")
+###
+#saveRDS(txi1,paste0(isoswitch_results,"tximport_result_drimseq.rds"))
+cts <- txi1$counts
+ctsab <- txi1$abundance
+cts <- cts[rowSums(cts) > 1 ,] %>% as.data.frame()
+range(colSums(cts[,1:6])/1e6)
+keep<- intersect(rownames(cts),rownames(ctsab))
+cts<- cts[keep,]
+ctsab<- ctsab[keep,]
+#df1<- df1[match(rownames(cts),df1$transcript_id),]
+####  adding transcript and gene name
+df1 <- rtracklayer::import("/Users/ieo5268/Documents/Thesis_Iman/cluster/GTF/gffcomare_AML_12345_hBM_123.combined.gtf") %>% as.data.frame() %>%dplyr::filter(type=="transcript")%>% dplyr::select(oId,gene_name,transcript_id)
+#table(df1$transcript_id==rownames(cts) )
+df1<- df1%>% dplyr::filter(transcript_id %in% rownames(cts))
+df2<-df1[!duplicated(df1$transcript_id),]
+df2<- df2[match(rownames(cts),df2$transcript_id),]
+identical(rownames(cts),df2$transcript_id)
+cts$gene_id<- df2$gene_name
+cts$feature_id<- df2$oId
+ctsab$gene_id<- df2$gene_name
+ctsab$feature_id<- df2$oId
+samples <- salmonDf[,c(4,5)] 
+
+###############  
+
+df1<-cts[,!(names(cts) %in% c("gene_id", "feature_id"))]
+df2 <- mutate_all(df1, function(x) as.integer(as.character(x)))
+df2<- as.matrix(df2)
+
+ddsTxi <- DESeqDataSetFromMatrix(df2, colData = samples,design = ~ genotype  + batch)
+ddsTxi$genotype<- relevel(ddsTxi$genotype,ref = "mut")
+#ddsTxi$genotype <- factor(ddsTxi$genotype, levels = c("wt","mut"))
+
+keep <- rowSums(counts(ddsTxi)) >= 1
+ddsTxi <- ddsTxi[keep,]
+#################
+
+#########
+dds <- DESeq(ddsTxi)
+res <- DESeq2::results(dds, contrast=c("genotype","mut","wt")) ###(with batch effect remover and normalization)
+
+pdf(file =paste0(result_deseq,"dispersion_modelfit_deseq.pdf"))
+plotDispEsts(dds)
+dev.off()
+#plotCounts(dds, gene=which.min(res$padj), intgroup="genotype")
+
+norm<- vst(dds)  #transform the raw counts of a DESeqDataSet object into normalized values by variance stabilize transformation
+# plot the distance between samples before batch correction
+sampleDists <- dist(t(assay(norm)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(norm$genotype, norm$batch, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pdf(file =paste0(result_deseq,"distmatrix_before_correction.pdf"))
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+dev.off()
+
+# plot th PC1 vs PC2 to see the variations 
+x<- pcaplot(norm,intgroup = c("genotype","batch"))
+ggsave(filename = paste0(result_deseq,"Normalized_PCA_before_batchCorrection.jpg"),plot =x,width = 10,height = 8)
+
+#mm <- model.matrix(~batch+genotype, colData(vst_norm))
+mat <- assay(norm)
+mm <- model.matrix(~genotype, colData(norm))
+mat1 <- limma::removeBatchEffect(mat,batch = norm$batch,design = mm )
+assay(norm) <- mat1
+x<- pcaplot(norm,intgroup = c("genotype"))
+ggsave(filename = paste0(result_deseq,"distPCA_VarianceStabilizingTransformation_aftercorrection_.jpg"),plot =x,width = 10,height = 8 )
+
+counts_batch_corrected <- assay(norm)%>% as.data.frame()
+###
+
+sampleDists <- dist(t(assay(norm)))
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(norm$genotype, norm$batch, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pdf(file =paste0(result_deseq,"distmatrix_after_correction_Vsd_LimmaBatchCorrectio.pdf"))
+#dev.new()
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors,cluster_cols = T,treeheight_col =50,treeheight_row = 100)
+dev.off()
+###################################################### 
+
+
+
+head(res)
+summary(res)
+sum(res$padj < 0.1, na.rm=TRUE)
+pdf(file =paste0(result_deseq,"MAplot_after_correction.pdf"))
+plotMA(res, ylim=c(-2,2))
+dev.off()
+res<-res[!is.na(res$padj),]
+res1<- res[res$padj<0.1,]
+resOrdered <- res1[order(res1$padj),]
+summary(resOrdered)
+
+select<- lapply(rownames(resOrdered),function(x){ which(rownames(dds)==x)}) %>% unlist()
+mat <- assay(norm)[ select, ]
+df <- as.data.frame(colData(norm)[,c("batch","genotype")])
+pdf(file =paste0(result_deseq,"DTE_DEseq.pdf"))
+pheatmap(mat, annotation_col=df)
+dev.off()
+
+## 
+counts_batch_corrected<-assay(dds)%>% as.data.frame()
+counts_batch_corrected$Tr<- rownames(counts_batch_corrected)
+normalized_expression<- counts_batch_corrected
+#####
+library(see)
+library(ggcorrplot)
+
+
+for (i in sample_){
+  #i="sAML1"
+ls<- list(sample_all_b[[i]]$A3SS_filtered %>% dplyr::mutate(event="A3SS"),sample_all_b[[i]]$A5SS_filtered %>% dplyr::mutate(event="A5SS"),sample_all_b[[i]]$IR_filtered %>% dplyr::mutate(event="IR"),sample_all_b[[i]]$MES_filtered %>% dplyr::mutate(event="MES"),sample_all_b[[i]]$SES_filtered %>% dplyr::mutate(event="SES"),sample_all_b[[i]]$`TSS|A3SS_filtered` %>% dplyr::mutate(event="TSS_A3SS"),sample_all_b[[i]]$`TSS|A5SS_filtered` %>% dplyr::mutate(event="TSS_A5SS"))
+######################
+   list_1<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,event,dPSI) %>% data.table::melt()
+   list_1$Tr <- str_extract(list_1$gene_evnt_ex, "TCONS\\.\\d+")%>% chartr(".","_",.)
+   list_1$Group<- "DownRegulated"
+    list_1[grep("UpRegulated",list_1$gene_evnt_ex),]$Group<- "UpRegulated"
+    list_1_mut<- list_1%>%dplyr::filter(Group == "UpRegulated")
+   f_d_m<- inner_join(by = "Tr",list_1_mut,normalized_expression)
+   
+   #co_1<-correlation::cor_test(f_d_m[,-c(1:6)],"sAML1_mut","sAML1_wt")
+  p<- ggstatsplot::ggcorrmat(type = "nonparametric",p.adjust.method = "hochberg",
+  data     = subset(f_d_m, select = -c(gene_evnt_ex, event, Tr, Group,variable,value )),
+  colors   = c("#4D4D4D", "white", "#B2182B"),
+  title    = paste0(i,"_Expression_Cor_UpRegulated_events")
+)
+  p
+  ggsave(filename = paste0(results,"Cor_expression_UpRegulatedEvents_",i,".jpg"),plot =p,width = 10,height = 8 )
+  ###
+   list_1_wt<- list_1%>%dplyr::filter(Group == "DownRegulated")
+   f_d_m<- inner_join(by = "Tr",list_1_wt,normalized_expression)
+   #co_1<-correlation::cor_test(f_d_m[,-c(1:6)],"sAML1_mut","sAML1_wt")
+   p<- ggstatsplot::ggcorrmat(type = "nonparametric",p.adjust.method = "hochberg",
+  data     = subset(f_d_m, select = -c(gene_evnt_ex, event, Tr, Group,variable,value )),
+  colors   = c("#4D4D4D", "white", "#B2182B"),
+  title    = paste0(i,"_Expression_Cor_DownRegulated_events")
+)
+   ggsave(filename = paste0(results,"Cor_expression_DownRegulatedEvents_",i,".jpg"),plot =p,width = 10,height = 8 )
+   p
+  #####
+    list_pct<-purrr::reduce(ls,rbind)
+    list_pct$Tr <- str_extract(list_pct$gene_evnt_ex, "TCONS\\.\\d+")%>% chartr(".","_",.)
+    list_pct$Group<- "DownRegulated"
+    list_pct[grep("UpRegulated",list_pct$gene_evnt_ex),]$Group<- "UpRegulated"
+    list_pct_x<- list_pct %>% dplyr::select(Tr,event,Group)
+   event_counts <- with(list_pct_x,table(Group, event))
+   event_percentages <- prop.table(event_counts, margin = 1) * 100 
+   event_data <- as.data.frame(event_counts)
+   event_data$percentage <- as.data.frame(event_percentages)$Freq
+   event_data$total <- rowSums(event_counts)
+  tt<-rowSums(event_counts) %>% as.data.frame() %>% rownames_to_column("Group")
+  colnames(tt)<- c("Group","Tot.")
+  event_colors <- c(A3SS='forestgreen',A5SS='indianred1', IR='red2', MES= 'orange', SES= 'cornflowerblue',TSS_A3SS='magenta',TSS_A5SS='darkolivegreen4') 
+  p<-ggplot(event_data, aes(fill=event, y=Freq, x=Group)) +
+	geom_bar(position="stack", stat="identity") +
+	geom_text(data=tt, aes(x=Group, label=Tot., y=Tot., fill=NULL), nudge_y=10) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), position = position_stack(vjust = 0.5), color = "black")+
+    labs(x =paste0(i,"_Group") , y = "n.events")+scale_fill_manual(values = event_colors)+theme_classic()+
+    ggtitle(paste0("Percentage of events ",i))+theme(text=element_text(size=18),axis.text.x = element_text(angle = 45, vjust = 0.5))
+  ggsave(filename = paste0(results,"Percentage_of_events_",i,".jpg"),plot =p,width = 10,height = 8 )
+  #########
+  list_pct_box<- list_pct %>% dplyr::select(dPSI,Group)
+  p<- ggplot(list_pct_box, aes(x =Group , y = dPSI, fill = Group)) +
+  geom_violindot(fill_dots = "black") +
+  theme_modern() +
+  scale_fill_material_d()+
+  ggtitle(paste0("Distribution of dPSI ",i))+theme(text=element_text(size=18),axis.text.x = element_text(angle = 45, vjust = 0.5))+
+    geom_text(data=tt, aes(x=Group, label=paste0("n.event= ",Tot.), y=0, fill=NULL), nudge_y=0,nudge_x = 0.1) 
+  ggsave(filename = paste0(results,"half_violin_dot_of_dpsi_",i,".jpg"),plot =p,width = 10,height = 8 )
+  ######### mut
+  list_1<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,event) %>% data.table::melt()
+  #list_1<-  ls %>% dplyr::select(gene_evnt_ex,event)
+  list_1$Tr <- str_extract(list_1$gene_evnt_ex, "TCONS\\.\\d+")%>% chartr(".","_",.)
+  list_1_mut<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("UpRegulated",gene_evnt_ex)])%>% dplyr::mutate(Group="UpRegulated")
+  f_d_m<- inner_join(by = "Tr",list_1_mut,normalized_expression)
+   f_d_m<- f_d_m[complete.cases(f_d_m),]
+   f_d_m<- f_d_m[!duplicated(f_d_m),]
+   df_long <- f_d_m %>% pivot_longer(cols = c(AML2, AML3,hBM1,hBM2,hBM3,sAML1_wt,AML5_wt,AML4_wt,sAML1_mut,AML5_mut,AML4_mut), names_to = "Sample", values_to = "Expression")
+   df_long$Sample<- factor(df_long$Sample,levels =c("AML5_mut","AML4_mut","sAML1_mut","AML5_wt","AML4_wt","sAML1_wt","hBM1","hBM2","hBM3","AML2","AML3"))
+   df_long$Expression[df_long$Expression==0]<- 0.001
+   ##################### SES stat
+p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="SES"),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",title = paste0("expression_UpRegulated_SES_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+scale_color_social(palette = "light")+
+  scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_UpRegulated_transcripts_ggstat_SES_",i,".jpg"),plot =p,width = 10,height = 8 )
+   ######### IR srtat 
+   p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="IR"),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",title = paste0("expression_UpRegulated_IR_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+ scale_color_social(palette = "light")+
+     scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_UpRegulated_transcripts_ggstat_IR_",i,".jpg"),plot =p,width = 10,height = 8 )
+   #### cor IR
+  p<- ggstatsplot::ggcorrmat(type = "nonparametric",p.adjust.method = "hochberg",
+  data     = subset(f_d_m, event == "IR", select = -c(gene_evnt_ex, event, Tr, Group)),
+  colors   = c("#4D4D4D", "white", "#B2182B"),
+  title    = paste0(i,"_Expression_Cor_UpRegulated_events_IR")
+)
+  ggsave(filename = paste0(results,"Cor_expression_UpRegulatedEvents_IR_",i,".jpg"),plot =p,width = 10,height = 8 )
+   ################### cor SES
+  p<- ggstatsplot::ggcorrmat(type = "nonparametric",p.adjust.method = "hochberg",
+  data     = subset(f_d_m, event == "SES", select = -c(gene_evnt_ex, event, Tr, Group)),
+  colors   = c("#4D4D4D", "white", "#B2182B"),
+  title    = paste0(i,"_Expression_Cor_UpRegulated_events_SES")
+)
+  ggsave(filename = paste0(results,"Cor_expression_UpRegulatedEvents_SES_",i,".jpg"),plot =p,width = 10,height = 8 )
+  
+    ###################
+
+  ###
+    p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="SES" & Sample %in% c(paste0(i,"_mut"),paste0(i,"_wt"))),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",
+   pairwise.comparisons = T,title = paste0("expression_UpRegulated_SES_samplewise_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+scale_color_social(palette = "light")+
+    scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_UpRegulated_transcripts_ggstat_SES_samplewise",i,".jpg"),plot =p,width = 10,height = 8 )
+  ###################
+    p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="IR" & Sample %in% c(paste0(i,"_mut"),paste0(i,"_wt"))),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",
+   pairwise.comparisons = T,title = paste0("expression_UpRegulated_IR_samplewise_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+scale_color_social(palette = "light")+
+    scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_UpRegulated_transcripts_ggstat_IR_samplewise",i,".jpg"),plot =p,width = 10,height = 8 )
+   #####
+   p<- ggplot(df_long, aes(x = event, y = Expression, fill = factor(Sample))) +
+  geom_boxplot()+scale_fill_material_d()+ coord_trans(y = "log10") +
+  labs(x = "Event", y = "Expression of Tr", fill = "Sample",subtitle = paste0("n.event= ",length(df_long$gene_evnt_ex %>% unique())))+
+    ggtitle(paste0("expression of UpRegulated transcripts in ",i))+theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+  ggsave(filename = paste0(results,"expression_UpRegulated_transcripts_ALL_",i,".jpg"),plot =p,width = 10,height = 8 )
+  
+ #ComplexHeatmap::Heatmap(s,column_order = colnames(x)) 
+ #ComplexHeatmap::Heatmap(x,column_order = colnames(x)) 
+
+  ######
+  
+  for (w in c("SES","MES","A3SS","A5SS","TSS_A5SS","TSS_A3SS","IR")){
+   ddf<- df_long%>% dplyr::filter(event==w)
+  ddf$Expression[ddf$Expression==0]<- 0.001 ### in log scale 0 makes problem
+  ddf$genotype <- ifelse(ddf$Sample %in% c("sAML1_mut","AML4_mut","AML5_mut"), "MUT","WT")
+  if (length(ddf$gene_evnt_ex)>0){
+    
+    #######
+    
+    
+    
+    
+  p<-ggplot(ddf, aes(x = Sample, y = Expression,fill=Sample)) +
+  geom_boxplot()+scale_fill_material_d()+
+    coord_trans(y = "log10")+
+    stat_summary(fun=mean, colour="black", geom="text", size=3, show_guide = FALSE, vjust=0.5, aes( label=round(..y.., digits=1)),position = position_nudge(y = 18))+
+  facet_wrap(~ genotype)+
+  labs(x = "Event", y = "Expression of Tr", fill = "Sample",subtitle = paste0("n.event= ",length(ddf$gene_evnt_ex %>% unique())))+
+  ggtitle(paste0("expression of UpRegulated transcripts in ",w," ",i))+
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+  ggsave(filename = paste0(results,"expression_UpRegulated_transcripts_",w,"_",i,".jpg"),plot =p,width = 15,height = 8 )
+  ###########
+  
+  }
+  }
+ #############################
+  list_1<-purrr::reduce(ls,rbind)%>% dplyr::select(gene_evnt_ex,event) %>% data.table::melt()
+  list_1$Tr <- str_extract(list_1$gene_evnt_ex, "TCONS\\.\\d+")%>% chartr(".","_",.)
+  list_1_wt<- list_1%>%dplyr::filter(gene_evnt_ex %in% list_1$gene_evnt_ex[grep("DownRegulated",gene_evnt_ex)])%>% dplyr::mutate(Group="DownRegulated")
+  f_d_m<- full_join(by = "Tr",list_1_wt,normalized_expression)
+   f_d_m<- f_d_m[complete.cases(f_d_m),]
+   f_d_m<- f_d_m[!duplicated(f_d_m),]
+   df_long <- f_d_m %>% pivot_longer(cols = c(AML2, AML3,hBM1,hBM2,hBM3,sAML1_wt,AML5_wt,AML4_wt,sAML1_mut,AML5_mut,AML4_mut), names_to = "Sample", values_to = "Expression")
+   df_long$Sample<- factor(df_long$Sample,levels =c("AML5_mut","AML4_mut","sAML1_mut","AML5_wt","AML4_wt","sAML1_wt","hBM1","hBM2","hBM3","AML2","AML3"))
+  ####
+  ###
+
+ df_long$Expression[df_long$Expression==0]<- 0.001
+   p<- ggplot(df_long, aes(x = event, y = Expression, fill = factor(Sample))) +
+  geom_boxplot()+scale_fill_material_d()+ coord_trans(y = "log10") +
+  labs(x = "Event", y = "Expression of Tr", fill = "Sample",subtitle = paste0("n.event= ",length(df_long$gene_evnt_ex %>% unique())))+
+    ggtitle(paste0("expression of DownRegulated transcripts in ",w," ",i))+theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+  ggsave(filename = paste0(results,"expression_DownRegulated_transcripts_All_",i,".jpg"),plot =p,width = 10,height = 8 )
+  ###################
+    #### cor IR
+  p<- ggstatsplot::ggcorrmat(type = "nonparametric",p.adjust.method = "hochberg",
+  data     = subset(f_d_m, event == "IR", select = -c(gene_evnt_ex, event, Tr, Group)),
+  colors   = c("#4D4D4D", "white", "#B2182B"),
+  title    = paste0(i,"_Expression_Cor_DownRegulated_events_IR")
+)
+  ggsave(filename = paste0(results,"Cor_expression_DownRegulatedEvents_IR_",i,".jpg"),plot =p,width = 10,height = 8 )
+   ################### cor SES
+  p<- ggstatsplot::ggcorrmat(type = "nonparametric",p.adjust.method = "hochberg",
+  data     = subset(f_d_m, event == "SES", select = -c(gene_evnt_ex, event, Tr, Group)),
+  colors   = c("#4D4D4D", "white", "#B2182B"),
+  title    = paste0(i,"_Expression_Cor_DownRegulated_events_SES")
+)
+  ggsave(filename = paste0(results,"Cor_expression_DownRegulatedEvents_SES_",i,".jpg"),plot =p,width = 10,height = 8 )
+  
+    ###################
+  
+  p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="SES"),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",title = paste0("expression_DownRegulated_SES_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+scale_color_social(palette = "light")+
+    scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_DownRegulated_transcripts_ggstat_SES_",i,".jpg"),plot =p,width = 10,height = 8 )
+   ######### IR srtat 
+   p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="IR"),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",title = paste0("expression_DownRegulated_IR_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+ scale_color_social(palette = "light")+
+     scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_DownRegulated_transcripts_ggstat_IR_",i,".jpg"),plot =p,width = 10,height = 8 )
+   ###################
+    p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="SES" & Sample %in% c(paste0(i,"_mut"),paste0(i,"_wt"))),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",
+   pairwise.comparisons = T,title = paste0("expression_DownRegulated_SES_samplewise_",i)
+  
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+scale_color_social(palette = "light")+
+    scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_DownRegulated_transcripts_ggstat_SES_samplewise",i,".jpg"),plot =p,width = 10,height = 8 )
+  ###################
+    p<- ggstatsplot::ggwithinstats(
+  data            = df_long%>% dplyr::filter(event=="IR" & Sample %in% c(paste0(i,"_mut"),paste0(i,"_wt"))),point.path = T,
+  x               = Sample,
+  y               = Expression,
+  type            = "p",
+  xlab            = "Sample",
+  ylab            = "Expression",
+  pairwise.comparisons = T,title = paste0("expression_DownRegulated_IR_samplewise_",i)
+)+theme(text=element_text(size=8),axis.text.x = element_text(angle = 45, vjust = 0.5))+scale_color_social(palette = "light")+
+    scale_y_continuous(
+    limits = c(0, 500))
+   ggsave(filename = paste0(results,"expression_DownRegulated_transcripts_ggstat_IR_samplewise",i,".jpg"),plot =p,width = 10,height = 8 )
+   ######
+  for (w in c("SES","MES","A3SS","A5SS","TSS_A5SS","TSS_A3SS","IR")){
+  ddf<- df_long%>% dplyr::filter(event==w)
+  ddf$genotype <- ifelse(ddf$Sample %in% c("sAML1_mut","AML4_mut","AML5_mut"), "MUT","WT")
+  ddf$Expression[ddf$Expression==0]<- 0.001
+
+  if (length(ddf$gene_evnt_ex)>0){
+  p<-ggplot(ddf, aes(x = Sample, y = Expression,fill=Sample)) +
+  geom_boxplot()+scale_fill_material_d()+coord_trans(y = "log10") +facet_wrap(~genotype)+
+    stat_summary(fun="mean", colour="black", geom="text",na.rm = T, size=3, show_guide = FALSE, vjust=0.5, aes( label=round(..y.., digits=1)),position = position_nudge(y = 18))+facet_wrap(~ genotype)+
+  labs(x = "Event", y = "Expression of Tr", fill = "Sample",subtitle = paste0("n.event= ",length(ddf$gene_evnt_ex %>% unique())))+
+    ggtitle(paste0("expression of DownRegulated transcripts in ",w," ",i))+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+  ggsave(filename = paste0(results,"expression_DownRegulated_transcripts_in_",w,"_",i,".jpg"),plot =p,width = 15,height = 8 )
+  }
+  ###
+
+  }
+}
+ 
+
+```

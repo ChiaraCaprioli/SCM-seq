@@ -1,0 +1,133 @@
+---
+title: "Psisigma"
+author: "Iman Nazari"
+date: "24/05/2023"
+output: html_document
+---
+
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  fig.width = 10, 
+  fig.height = 5
+)
+defaultW <- getOption("warn")
+options(device = "RStudioGD")
+```
+
+## Loading libraries
+```{r include=FALSE, results='hide'}
+library(devtools)
+library(stringr)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(biomaRt)
+library(IsoformSwitchAnalyzeR)
+library(GenomicFeatures)
+library(AnnotationDbi)
+library(DGEobj.utils)
+library(Biostrings)
+library(msaR)
+library(seqinr)
+library(Seurat)
+library(AnnotationHub)
+library(ensembldb)
+library(edgeR)
+library(SummarizedExperiment)
+library(ggplot2)
+library(DEXSeq)
+library(grDevices)
+library(ggrepel)
+library(tidyverse)
+library(rnaseqDTU)
+library(org.Hs.eg.db)
+library(limma)
+library(DRIMSeq)
+library(tximport)
+library(safejoin)
+library(dplyr)
+library(enrichR)
+library(chimeraviz)
+```
+
+
+## splicing ALL samples without subsampling
+
+```{r eval=FALSE, include=FALSE}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+dir.create("/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/PSIsigma/Analysis")
+results<- "/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/PSIsigma/Analysis/"
+
+
+psisig<-function(spli_in,name){
+ 
+    spli_in$Experiment<- "ONT_splicing"
+    spli_in<- na.omit(spli_in)
+    l<- length(spli_in$Event.Type)
+    ge<- length(spli_in$Gene.Symbol %>% unique())
+  x<-ggplot(spli_in,aes(Experiment, FDR..BH.))+geom_boxplot()+geom_jitter(width = 0.1, size = 0.2)+scale_color_manual(values = c("purple", "gold"))+theme_bw()+theme(text=element_text(size=10))+labs(title =paste0("Splicing Analysis ", name) ,subtitle = "FDR distribution")+ geom_hline(yintercept= 0.25, size=0.5, color="red")+
+ggplot(spli_in, aes(FDR..BH.)) + geom_density(fill='steelblue', alpha=.5)+theme_classic( )+coord_flip()+theme(text=element_text(size=10),axis.title = element_blank()) +geom_vline(xintercept= 0.25, size=0.5, color="red")+labs(title =paste0("N.event ", l) ,subtitle = paste0("N.genes ", ge))
+x
+ ggsave(plot = x,path=results,filename  =paste0(name,"_FDR_BH_distribution.jpg"),width = 5,height = 7)
+ 
+  spli_in<- spli_in[spli_in$FDR..BH. <=0.25 & abs(spli_in$ΔPSI....)>0.25 ,]
+  l<- length(spli_in$Event.Type)
+  ge<- length(spli_in$Gene.Symbol %>% unique())
+  
+  x<-ggplot(spli_in,aes(Experiment, FDR..BH.))+geom_boxplot()+geom_jitter(width = 0.1, size = 0.2)+scale_color_manual(values = c("purple", "gold"))+theme_bw()+theme(text=element_text(size=10))+labs(title =paste0("Splicing Analysis ", name) ,subtitle = "FDR filtered.dist")+ geom_hline(yintercept= 0.25, size=0.5, color="red")+
+ggplot(spli_in, aes(FDR..BH.)) + geom_density(fill='steelblue', alpha=.5)+theme_classic( )+coord_flip()+theme(text=element_text(size=10),axis.title = element_blank()) +geom_vline(xintercept= 0.25, size=0.5, color="red")+labs(title =paste0("N.event ", l) ,subtitle = paste0("N.genes ", ge))
+x
+ggsave(plot = x,path=results,filename  =paste0(name,"_FDR_BH_filtered_distribution.jpg"),width = 5,height = 7)
+  
+  spli1_mut<- spli_in[spli_in$ΔPSI....<0,]
+  spli1_wt<- spli_in[spli_in$ΔPSI....>0,]
+  spli1_mut$Gene.Symbol
+  spli1_wt$Gene.Symbol
+  
+  
+xm<-table(spli1_mut$Event.Type) %>%as.data.frame()%>% rename("Mut"="Freq")
+xw<-table(spli1_wt$Event.Type)%>% as.data.frame()%>% rename("Wt"="Freq")
+df1<-dplyr::full_join(xm,xw,by="Var1") %>% data.table::melt(.)%>% rename("Splicing_event"="Var1","Group"="variable")
+df1[is.na.data.frame(df1)]<-0
+x<- ggplot(df1, aes(x=Splicing_event, y=value, fill=Group)) + geom_bar(stat="identity", position="dodge")+ theme_classic()+geom_text(aes(label=df1$value), position=position_dodge(width=0.9), vjust=-0.25)+theme(text=element_text(size=10))
+x
+ggsave(plot = x,path=results,filename  =paste0(name,"_Splicing_event_by_group.jpg"),width = 5,height = 7)
+
+df2<-dplyr::full_join(xm,xw,by="Var1")
+df2[is.na(df2)]<-0
+df2<-df2%>%mutate(pct_mut= round(prop.table(Mut) * 100,2),pct_wt= round(prop.table(Wt) * 100,2))%>% rename("Splicing_event"="Var1")
+#x4<-rbind(data.frame(Category="Tot",Count_wt=sum(x4$Count_wt),Count_mut= sum(x4$Count_mut),pct_wt=100,pct_mut=100),x4)
+lbls1 <- paste0(df2$Splicing_event,"(",df2$Wt,")"," ",df2$pct_wt,"%") # add percents to labels
+lbls2 <- paste0(df2$Splicing_event,"(",df2$Mut,")"," ",df2$pct_mut,"%") # add percents to labels
+pdf(paste0(results,name,"_Splicing_event_wt",".pdf"),width = 8,height = 5)
+pie(df2$pct_wt, labels =lbls1, main=paste0(name," WT cells Splicing (",sum(df2$Wt),")"))
+dev.off()
+
+pdf(paste0(results,name,"_Splicing_event_mut",".pdf"),width = 8,height = 5)
+pie(df2$pct_mut, labels =lbls2, main=paste0(name," MUT cells Splicing  (",sum(df2$Mut),")"))
+dev.off()
+
+######GO analysis
+ego3 <- enrichGO(gene = spli1_mut$Gene.Symbol,OrgDb= org.Hs.eg.db,keyType= 'SYMBOL',ont= "CC",pAdjustMethod = "BH",pvalueCutoff  = 0.2, qvalueCutoff  = 0.1)
+ego <- setReadable(ego3, OrgDb = org.Hs.eg.db)
+x<-dotplot(ego, showCategory=100, font.size = 8,title=paste0("mut_",name))+theme(text = element_text(size=10),axis.title.y = element_text(size=6))
+ggsave(plot = x,path=results,filename  =paste0(name,"_mut_Gene_ontology.jpg"),width = 5,height = 7)
+
+ego3 <- enrichGO(gene = spli1_wt$Gene.Symbol,OrgDb= org.Hs.eg.db,keyType= 'SYMBOL',ont= "CC",pAdjustMethod = "BH",pvalueCutoff  = 0.4, qvalueCutoff  = 0.4)
+ego <- setReadable(ego3, OrgDb = org.Hs.eg.db)
+x<-dotplot(ego, showCategory=100, font.size = 8,title=paste0("wt_",name))+theme(text = element_text(size=10),axis.title.y = element_text(size=6))
+ggsave(plot = x,path=results,filename  =paste0(name,"_wt_Gene_ontology.jpg"),width = 5,height = 7)
+}
+
+
+
+spli_in_fil<-read.delim("/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/PSIsigma/Splicing_Results/results/splicing_mut_wt_srsf2_HSC_myeloid_r5_ir3.sorted.txt")
+spli_in_a<-read.delim("/hpcnfs/scratch/PGP/SCMseq/isoform_analysis/PSIsigma/Splicing_Results/Splicing_AllTR/results/splicing_mut_wt_srsf2_HSC_myeloid_r5_ir3.sorted.txt")
+
+psisig(spli_in_fil,"AllSamples_Filt.Tr")
+psisig(spli_in_a,"AllSamples_All.Tr")
+
+```
+
+
