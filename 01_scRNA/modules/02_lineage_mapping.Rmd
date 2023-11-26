@@ -1,0 +1,1344 @@
+---
+title: "02_lineage_mapping"
+author: "Chiara Caprioli"
+date: "July 6th 2023"
+output:
+  html_document:
+    code_folding: hide
+---
+
+**Aims:**
+1. Load and explore external single-cell reference of healthy BM donors
+2. Aggregate cell lineages into wider categories 
+3. Check marker genes of lineages in reference and annotate according to HCA signatures
+4. Approach 1: Cell lineage and pseudotime assignment by scmap (Triana's reference RNA + proteins)
+5. Approach 2: Cell lineage assignment by singleR (Triana's reference RNA)
+6. Check agreement between scmap and singleR
+7. Approach 3: Gene modules according to cell lineage signatures (Human Cell Atlas BM)
+
+## Set up
+```{r, echo=F, message=F, warning=F}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(Seurat)
+  library(reshape2)
+  library(SingleCellExperiment)
+  library(scmap)
+  library(parallel)
+  library(SingleR)
+  library(ComplexHeatmap)
+  library(magick)
+  library(msigdbr)
+  library(UCell)
+})
+```
+
+```{r}
+# set paths
+path_main <- '/Users/ieo4874/Desktop/working/SCMseq/'
+path_data <- paste0(path_main, 'data/')
+path_results <- paste0(path_main, 'results_and_plots/lineage_map/')
+```
+
+```{r}
+# samples
+samples <- c('AML4', 'AML5', 'AML6', 'sAML1',
+             'AML2', 'AML3', 'sAML16',
+             'hBM1', 'hBM2', 'hBM3')
+```
+
+```{r, warning=FALSE, message=FALSE}
+#set colors 
+colors <- list()
+
+colors$sample <- setNames(
+  c("#FFEDA0", "#FEB24C", "#FC4E2A", "#BD0026", 
+    "#66C2A5", "#3288BD", "#5E4FA2", 
+    "#BDBDBD", "#737373", "#252525"),  
+  samples
+)
+
+colors$cohort <- setNames(
+  c("#FF9932FF", "#405D61FF", '#F0F0F0'),
+  c("SRSF2 mutated", "SRSF2 unmutated", 'healthy BM')
+)
+
+colors$cell_cycle <- setNames(
+  c("#45aaf2", "#f1c40f", "#e74c3c"),
+  c("G1", "S", "G2M")
+)
+
+colors$discrete <- c(
+  '#046C9AFF', '#D69C4EFF', '#899DA4FF', '#C93312FF', '#D8B70AFF',
+  '#02401BFF', '#A2A475FF', '#81A88DFF', '#972D15FF', '#CADDE1FF',
+  '#7B906FFF', '#174D79FF',  '#898989FF', '#D4CDB1FF', '#708090FF',
+  '#6CA9C3FF', '#3A3533FF', '#000E33FF', '#800000FF',  '#175E78FF')
+```
+
+## Load, tidy up and explore reference
+External reference comes from Triana et al. (https://doi.org/10.1038/s41590-021-01059-0) as a Seurat object.
+It consists of 6 healthy BM donors (3 young + 3 aged) profiled by CITE-seq and annotated to comprise different
+cell states encountered in bone marrow, including both categorical cell type labels and lineage-specific pseudotime.
+In the study, a set of 462 genes was identified to maximize information about cell states in the bone marrow. 
+MOFAUMAP embeddings reflect both RNA and protein contribution to multiomics factor analysis.
+Antibody counts are CLR normalized and the RNA counts were Log Normalized; our query samples need to be the same way.
+
+```{r}
+#options(timeout = max(1000, getOption("timeout")))
+#Healthy <- readRDS(url("https://ndownloader.figshare.com/files/28408638")) #in case this link breaks, see #https://doi.org/10.6084/m9.figshare.13397651.v3
+
+#saveRDS(Healthy, paste0(path_data, 'Healthy.rds'))
+Healthy <- readRDS(paste0(path_data, 'Healthy.rds'))
+```
+
+### Group lineages
+#### Set groupings
+```{r}
+# aggregation #1
+
+aggregation1 <- list(
+  HSC_MPP = "HSCs & MPPs",
+  
+  Early_myeloid = c("Lymphomyeloid prog", "Erythro-myeloid progenitors",  
+                   "Early promyelocytes", "Eosinophil-basophil-mast cell progenitors",
+                   "Megakaryocyte progenitors",  
+                   "Plasmacytoid dendritic cell progenitors"),
+  
+  Late_myeloid = c("Late promyelocytes", "Myelocytes", "Plasmacytoid dendritic cells", 
+             "Conventional dendritic cell 1", "Conventional dendritic cell 2",
+             "Classical Monocytes", "Non-classical monocytes", "Monocyte-like blasts"),
+  
+  Erythroid = c("Early erythroid progenitor", "Late erythroid progenitor", "Aberrant erythroid"),
+  
+  T_cells = c("CD4+ naive T cells", "CD4+ memory T cells", 
+             "CD69+PD-1+ memory CD4+ T cells", "CD4+ cytotoxic T cells",
+             "CD8+ naive T cells", "CD8+ effector memory T cells", 
+             "CD8+ central memory T cells", "CD8+CD103+ tissue resident memory T cells", 
+             "GammaDelta T cells"),
+  
+  NK_cells = c("NK cell progenitors", "NK T cells", "CD56brightCD16- NK cells", "CD56dimCD16+ NK cells"),
+  
+  B_cells = c("Pre-pro-B cells", 
+             "Pro-B cells", 
+             "Small pre-B cell",
+             "Pre-B cells", 
+             "Immature B cells",
+             "Mature naive B cells", 
+             "Nonswitched memory B cells", 
+             "CD11c+ memory B cells", 
+             "Class switched memory B cells", 
+             "Plasma cells"),
+  
+  Stromal = c("Mesenchymal cells_1", "Mesenchymal cells_2")
+)
+
+
+# aggregation #2
+
+aggregation2 <- list(
+  HSC_MPP = "HSCs & MPPs",
+  
+  Early_myeloid = c("Lymphomyeloid prog", 
+                   "Erythro-myeloid progenitors",  
+                   "Early promyelocytes"),
+  
+  Late_myeloid = c("Late promyelocytes", "Myelocytes"),
+  
+  Erythroid = c("Early erythroid progenitor", 
+                 "Late erythroid progenitor", 
+                 "Aberrant erythroid"),
+  
+  MK = "Megakaryocyte progenitors",
+  
+  Eo_baso_mast = "Eosinophil-basophil-mast cell progenitors",
+  
+  DC = c("Plasmacytoid dendritic cell progenitors", "Plasmacytoid dendritic cells", 
+        "Conventional dendritic cell 1", "Conventional dendritic cell 2"),
+  
+  Mono = c("Classical Monocytes", "Non-classical monocytes", "Monocyte-like blasts"),
+  
+  T_cells = c("CD4+ naive T cells", "CD4+ memory T cells", 
+          "CD69+PD-1+ memory CD4+ T cells", "CD4+ cytotoxic T cells",
+          "CD8+ naive T cells", "CD8+ effector memory T cells", 
+          "CD8+ central memory T cells", "CD8+CD103+ tissue resident memory T cells", 
+          "GammaDelta T cells"),
+  
+  NK_cells = c("NK cell progenitors", "NK T cells", "CD56brightCD16- NK cells", "CD56dimCD16+ NK cells"),
+  
+  B_early = c("Pre-pro-B cells", 
+             "Pro-B cells", 
+             "Small pre-B cell",
+             "Pre-B cells"),
+  
+  B_mature = c("Immature B cells", "Mature naive B cells", 
+             "Nonswitched memory B cells", 
+             "CD11c+ memory B cells", 
+             "Class switched memory B cells", 
+             "Plasma cells"),
+  
+  Stromal = c("Mesenchymal cells_1", "Mesenchymal cells_2")
+)
+```
+
+```{r}
+# set fine lineage levels
+Healthy$ct <- factor(Healthy$ct, 
+                     levels = c(unlist(aggregation1, use.names = FALSE)))
+```
+
+```{r}
+# assign groupings
+## aggregation 1
+L <- list()
+for (i in names(aggregation1[1:length(aggregation1)])) {
+  x = data.frame(
+    barcode = colnames(Healthy)[which(Healthy$ct %in% c(unlist(aggregation1[i], use.names = FALSE)))],
+    ct = Healthy$ct[which(Healthy$ct %in% c(unlist(aggregation1[i], use.names = FALSE)))],
+    aggregation1 = names(aggregation1[i])
+  )
+  L[[i]] <- x
+}
+df_ct <- do.call(rbind, L)
+
+df_ct <- df_ct[match(colnames(Healthy), df_ct$barcode),]
+
+Healthy$aggregated_lineage1 <- df_ct$aggregation1
+
+Healthy$aggregated_lineage1 <- factor(Healthy$aggregated_lineage1,
+                                     levels = names(aggregation1[1:length(aggregation1)]))
+
+## aggregation 2
+L <- list()
+for (i in names(aggregation2[1:length(aggregation2)])) {
+  x = data.frame(
+    barcode = colnames(Healthy)[which(Healthy$ct %in% c(unlist(aggregation2[i], use.names = FALSE)))],
+    ct = Healthy$ct[which(Healthy$ct %in% c(unlist(aggregation2[i], use.names = FALSE)))],
+    aggregation2 = names(aggregation2[i])
+  )
+  L[[i]] <- x
+}
+df_ct <- do.call(rbind, L)
+
+df_ct <- df_ct[match(colnames(Healthy), df_ct$barcode),]
+
+Healthy$aggregated_lineage2 <- df_ct$aggregation2
+
+Healthy$aggregated_lineage2 <- factor(Healthy$aggregated_lineage2,
+                                     levels = names(aggregation2[1:length(aggregation2)]))
+```
+
+#### Set colors
+```{r}
+my_pal <- c(
+  paletteer::paletteer_d("nationalparkcolors::Denali"),
+  paletteer:: paletteer_d("nationalparkcolors::Badlands"),
+  paletteer::paletteer_d("nationalparkcolors::GreatBasin"), 
+  paletteer::paletteer_d("nationalparkcolors::Arches"), 
+  paletteer:: paletteer_d("nationalparkcolors::MtMckinley"),
+  paletteer:: paletteer_d("nationalparkcolors::CraterLake"),
+  paletteer:: paletteer_d("nationalparkcolors::ArcticGates"),
+  paletteer:: paletteer_d("nationalparkcolors::Yellowstone")
+)
+
+colors$lineage <- setNames(
+  my_pal,
+  levels(Healthy$ct)
+)
+
+colors$aggregated_lineage1 <- setNames(
+  c("#FED976", '#FD8D3C','darkred', "#238443", '#174D79FF', '#CADDE1FF', "grey", "#000E33FF"),
+  levels(Healthy$aggregated_lineage1)
+)
+
+colors$aggregated_lineage2 <- setNames(
+  c("#FED976", '#FD8D3C','darkred', 
+    "#3A5836FF", "#8073AC",
+    "#DFC27D", "#DBA662FF", "#80CDC1",
+    '#174D79FF', '#CADDE1FF', 
+    "#F7ECD8FF", "grey", 
+    "#000E33FF"),
+  levels(Healthy$aggregated_lineage2)
+)
+```
+
+#### check manual grouping of HSC and myeloid progenitors according to pseudotime
+```{r}
+# HSC/myeloid
+x <- Healthy@meta.data %>%
+    filter(!is.na(Myelocytes) &
+           ct %in% c("HSCs & MPPs", "Lymphomyeloid prog", 
+                     "Erythro-myeloid progenitors", 
+                     "Early promyelocytes", "Late promyelocytes", "Myelocytes")) %>%
+  mutate(Myelocytes = scales::rescale(Myelocytes, to = c(0,1))) 
+
+pt_summary <- x$Myelocytes %>% quantile()
+
+x <- x %>%
+  group_by(ct) %>%
+  summarise(q25 = quantile(Myelocytes)[2],
+            q50 = quantile(Myelocytes)[3],
+            q75 = quantile(Myelocytes)[4]) %>%
+  arrange(q50)
+
+dat_ <- Healthy@meta.data %>%
+  filter(!is.na(Myelocytes) &
+           ct %in% c("HSCs & MPPs", "Lymphomyeloid prog", 
+                     "Erythro-myeloid progenitors", 
+                     "Early promyelocytes", "Late promyelocytes", "Myelocytes")) %>%
+  dplyr::select(c(Myelocytes, ct, aggregated_lineage1, aggregated_lineage2)) %>%
+  mutate(Myelocytes = scales::rescale(Myelocytes, to = c(0,1))) 
+dat_ <- full_join(dat_, x, by = "ct") %>% arrange(q50)
+dat_$ct <- factor(dat_$ct, levels = unique(dat_$ct))
+
+ggplot(dat_, aes(Myelocytes, ct, fill = aggregated_lineage1)) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_y_discrete(limits=rev) +
+  scale_fill_manual(values = colors$aggregated_lineage1) +
+  xlab("Myeloid pseudotime") +
+  labs(title = "HSC & myeloid-committed cell types", subtitle = "Triana's hBM reference") +
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2, size = 18),
+        plot.subtitle = element_text(face = 'plain', hjust = 0.5, vjust = 1, size = 15),
+        axis.text = element_text(color = 'black', size = 12),
+        axis.title = element_text(color = 'black', size = 15),
+        axis.title.y = element_blank())
+
+ggsave(paste0(path_results, "plots/triana_my_pt_lineages_option1.png"), width = 6, height = 5)
+```
+
+```{r}
+# B cells
+x <- Healthy@meta.data %>%
+    filter(!is.na(B.cells) &
+           ct %in% c("Pre-pro-B cells", "Pro-B cells", 
+                     "Small pre-B cell", "Pre-B cells",
+                     "Immature B cells", "Mature naive B cells", 
+                     "Nonswitched memory B cells", 
+                     "CD11c+ memory B cells", 
+                     "Class switched memory B cells", 
+                     "Plasma cells")) %>%
+  mutate(B.cells = scales::rescale(B.cells, to = c(0,1))) 
+
+pt_summary <- x$B.cells %>% quantile()
+
+x <- x %>%
+  group_by(ct) %>%
+  summarise(q25 = quantile(B.cells)[2],
+            q50 = quantile(B.cells)[3],
+            q75 = quantile(B.cells)[4]) %>%
+  arrange(q50)
+
+dat_ <- Healthy@meta.data %>%
+  filter(!is.na(B.cells) &
+           ct %in% c("Pre-pro-B cells", "Pro-B cells", 
+                     "Small pre-B cell", "Pre-B cells",
+                     "Immature B cells", "Mature naive B cells", 
+                     "Nonswitched memory B cells", 
+                     "CD11c+ memory B cells", 
+                     "Class switched memory B cells", 
+                     "Plasma cells")) %>%
+  dplyr::select(c(B.cells, ct, aggregated_lineage1, aggregated_lineage2)) %>%
+  mutate(B.cells = scales::rescale(B.cells, to = c(0,1))) 
+dat_ <- full_join(dat_, x, by = "ct") %>% arrange(q50)
+dat_$ct <- factor(dat_$ct, levels = unique(dat_$ct))
+
+ggplot(dat_, aes(B.cells, ct, fill = aggregated_lineage2)) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_y_discrete(limits=rev) +
+  scale_fill_manual(values = colors$aggregated_lineage2) +
+  xlab("B cell pseudotime") +
+  labs(title = "B cell types", subtitle = "Triana's hBM reference") +
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = 'bold', hjust = 0.5, vjust = 2, size = 18),
+        plot.subtitle = element_text(face = 'plain', hjust = 0.5, vjust = 1, size = 15),
+        axis.text = element_text(color = 'black', size = 12),
+        axis.title = element_text(color = 'black', size = 15),
+        axis.title.y = element_blank())
+
+ggsave(paste0(path_results, "plots/triana_B_pt_lineages_option2.png"), width = 6, height = 5)
+```
+
+```{r}
+# further option: follow pseudotime quartiles 
+
+#HSC_progenitors <- c("HSCs & MPPs", "Erythro-myeloid progenitors") 
+#
+#Early_myeloid <- c("Lymphomyeloid prog",   
+#                   "Early promyelocytes", "Eosinophil-basophil-mast cell progenitors",
+#                   "Megakaryocyte progenitors", "Early erythroid progenitor ", 
+#                   "Plasmacytoid dendritic cell progenitors")
+#
+#Late_myeloid <- c("Late erythroid progenitor",
+#             "Aberrant erythroid", "Late promyelocytes", 
+#             "Myelocytes", "Plasmacytoid dendritic cells", 
+#             "Conventional dendritic cell 1", "Conventional dendritic cell 2",
+#             "Classical Monocytes", "Non-classical monocytes", "Monocyte-like blasts")
+#
+```
+
+```{r}
+saveRDS(Healthy, paste0(path_data, 'Healthy.rds'))
+```
+
+### Markers by lineage
+```{r}
+# compute markers
+Idents(Healthy) <- Healthy$ct
+
+lineage_markers_ref <- FindAllMarkers(Healthy,
+                                      logfc.threshold = 0.25,
+                                      test.use = "wilcox",
+                                      slot = "data")
+```
+
+We also annotate markers according to cell lineage-specific transcriptional signatures derived 
+from the Human Cell Atlas (HCA) BM study (Hay et al., 10.1016/j.exphem.2018.09.004). 
+This independent single-cell dataset includes 8 healthy BM donors spanning different ages and sexes. 
+Discrepancies between Triana's labels and HCA's labels might be due to the lack of surface protein information in the latter.
+
+```{r}
+hay <- msigdbr(species = 'Homo sapiens', category = 'C8') 
+names_ <- unique(hay$gs_name)
+names_sign <- names_[which(grepl('HAY', names_) == TRUE)]
+hay <- hay %>% filter(gs_name %in% names_sign) %>% dplyr::select(3,4)
+
+lineage_markers_ref <- left_join(lineage_markers_ref, hay, by = c("gene" = "gene_symbol"))
+colnames(top3)[8] <- "Hay_class"
+
+write_csv(lineage_markers_ref, paste0(path_results, "tables/triana_ref_markers.csv"))
+```
+
+```{r}
+# inspect top markers
+L <- list()
+for (i in unique(triana_ref_markers$cluster)) {
+  x <- triana_ref_markers %>%
+    filter(cluster == i, p_val_adj < 0.05, avg_log2FC > 0) %>%
+    slice_max(n = 3, order_by = avg_log2FC, with_ties = F) %>%
+    mutate(lineage = i)
+  L[[i]] <- x
+}
+
+top3 <- do.call(rbind, L)
+
+target_mat <- Healthy@assays$RNA@scale.data[which(rownames(Healthy@assays$RNA@scale.data) %in% unique(top3$gene)),] 
+
+DotPlot(Healthy,
+        features = unique(top3$gene),
+        dot.min = 0.2,
+        col.min = 0,
+        col.max = max(target_mat)) +
+  scale_y_discrete(limits=rev) +
+  theme_bw() +
+  ggtitle("Top 3 lineage markers") +
+  scale_colour_gradientn(
+    colours = c("#FFFFFF", "#6BAED6", "#08306B")
+  ) +
+  theme(panel.grid = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_text(color = "black", size = 11),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        plot.title = element_text(face = "bold", hjust = 0.5, vjust = 2, size = 14)) 
+
+ggsave(paste0(path_results, "plots/top_ref_markers_lin.png"), height = 8, width = 15)
+```
+
+### Plots
+```{r}
+# all lineages
+DimPlot(Healthy, reduction = "MOFAUMAP", 
+        group.by = 'ct', pt.size = 0.1, 
+        shuffle = T) +
+  theme_bw() +
+  scale_color_manual(values = colors$lineage) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank()) 
+
+ggsave(paste0(path_results, 'plots/triana_mofaumap.png'), width = 13, height = 5)
+
+# aggregated lineages
+DimPlot(Healthy, reduction = "MOFAUMAP", 
+        group.by = 'aggregated_lineage1', pt.size = 0.1, 
+        shuffle = T) +
+  theme_bw() +
+  scale_color_manual(name = "Aggregated lineage", values = colors$aggregated_lineage1) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank(),
+        aspect.ratio = 1) 
+
+ggsave(paste0(path_results, 'plots/triana_mofaumap_grouped1.png'), width = 6, height = 5)
+
+DimPlot(Healthy, reduction = "MOFAUMAP", 
+        group.by = 'aggregated_lineage2', pt.size = 0.1, 
+        shuffle = T) +
+  theme_bw() +
+  scale_color_manual(name = "Aggregated lineage", values = colors$aggregated_lineage2) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_blank(),
+        aspect.ratio = 1) 
+
+ggsave(paste0(path_results, 'plots/triana_mofaumap_grouped2.png'), width = 6, height = 5)
+```
+
+```{r}
+#CD34+
+
+# protein
+DefaultAssay(Healthy) <- 'AB'
+p1 <- FeaturePlot(Healthy, reduction = "MOFAUMAP", features = "CD34-AB", 
+            pt.size = 0.1, cols = c("lightgrey", "darkgreen")) +
+  theme_bw() +
+  ggtitle('Ab expression') +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = 'bold', hjust = 0.5),
+        aspect.ratio = 1) 
+
+# gene
+DefaultAssay(Healthy) <- 'RNA'
+p2 <- FeaturePlot(Healthy, reduction = "MOFAUMAP", features = "CD34", 
+            pt.size = 0.1, cols = c("lightgrey", "navy")) +
+  theme_bw() +
+  ggtitle('Gene expression') +
+  coord_equal() +
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = 'bold', hjust = 0.5),
+        aspect.ratio = 1) 
+
+# Triana's classification
+DefaultAssay(Healthy) <- 'BOTH'
+p3 <- DimPlot(Healthy, reduction = "MOFAUMAP", 
+        group.by = 'CD34plus', pt.size = 0.1, 
+        shuffle = T) +
+  theme_bw() +
+  ggtitle("Triana's classification") +
+  coord_equal() +
+  scale_color_manual(name = 'CD34 status', 
+                     values = c('lightgrey', 'darkred'), 
+                     labels = c('CD34-negative', 'CD34-positive')) +
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(face = 'bold', hjust = 0.5),
+        aspect.ratio = 1) 
+
+ggsave(paste0(path_results, 'plots/triana_mofaumap_CD34.png'), 
+       p1 + p2 + p3 +
+         patchwork::plot_layout(widths = 6, heights = 5, ncol = 3),
+       width = 18, height = 5)
+```
+
+### Tables
+```{r}
+x <- table(Healthy@meta.data$CD34plus, Healthy@meta.data$ct)
+x <- t(x)/apply(x,2,sum) 
+colnames(x) <- c("CD34neg", "CD34pos")
+x <- as.data.frame(x) %>%
+  pivot_wider(names_from = Var2, values_from = Freq)
+colnames(x)[1] <- "lineage"
+
+write_csv(x, paste0(path_results, "tables/triana_CD34_lineage_counts.csv"))
+```
+
+## Load query
+```{r}
+merged <- readRDS("~/Desktop/working/SCMseq/data/merged_seurat_logcounts.rds") #log normalized
+normalized_counts <- GetAssayData(merged, assay = "RNA", slot="data")
+counts <- GetAssayData(merged, assay = "RNA", slot="counts") 
+```
+
+## Approach 1: scmap
+After Sergio Triana & Lars Velten, https://git.embl.de/triana/nrn/-/tree/master/Projection_Vignette (06/05/2021)
+
+### Mapping query data on reference data
+The projection only uses a set 462 genes that were selected in Triana's reference to maximize information about cell states in the bone marrow. 
+```{r}
+counts.projection <- normalized_counts[intersect(rownames(normalized_counts), rownames(Healthy)),]
+dim(counts.projection) #449 45493
+```
+
+Next we use the routines from the `scmap` package to identify the nearest neighbors between query data (`counts.projection`) and Triana's reference data (`Healthy`). 
+This computation can take a while.
+```{r scmap, message=F, warning=F}
+#set up query data
+sce_Culture <- SingleCellExperiment(assays = list(normcounts =  as.matrix(counts.projection)))
+logcounts(sce_Culture) <- normcounts(sce_Culture)
+rowData(sce_Culture)$feature_symbol <- rownames(sce_Culture)
+
+#set up reference data
+sce_All <- SingleCellExperiment(assays = list(
+  normcounts = as.matrix(Healthy@assays$RNA@data[rownames(counts.projection),])))
+logcounts(sce_All) <- normcounts(sce_All)
+rowData(sce_All)$feature_symbol <- rownames(sce_All) # use gene names as feature symbols
+sce_All <- sce_All[!duplicated(rownames(sce_All)), ] # remove features with duplicated names
+
+# set the features to be used for scmap projection
+sce_Culture <- setFeatures(sce_Culture,features = rownames(sce_Culture))
+sce_All <- setFeatures(sce_All,features =  rownames(sce_All))
+
+# create an index to enable fast approximate nearest neighbor search
+sce_Culture <- indexCell(sce_Culture)
+sce_All <- indexCell(sce_All)
+
+# for each cell in query dataset, search for the 5 nearest neighbors by cosine distance within a collection of reference datasets
+Culture_Map <- scmapCell(
+  projection = sce_Culture,
+  index_list = list(sce_All = metadata(sce_All)$scmap_cell_index),
+  w = 5)
+```
+
+We use the nearest neighbor information to:
+-compute the embedding of query cells in the reference umap
+-compute the pseudotime of query cells projected in the reference umap
+-identify the most similar cell type 
+-compute a score that determines how similar each query cell is to the reference
+```{r project}
+# v1 (original, no pseudotime)
+#Calc<-function(id,cult){
+#  u <- cult[,id]
+#  xcoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,1][u]
+#  ycoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,2][u]
+#  x=mean(xcoords)
+#  y=mean(ycoords)
+#  ct.t=table(Idents(Healthy)[u])
+#  ct.t<- ct.t[order(ct.t,decreasing = T)]
+#  nearest <- Healthy@assays$RNA@data[rownames(sce_Culture),u]
+#  query <- normcounts(sce_Culture)[,id]
+#  cornn<- apply(nearest,2,function(x) cor(x, query, method = 'pearson')) # pearson in original script
+#  data.frame(row.names = id, x = x, y =y, ct = names(ct.t)[1], score = mean(cornn))
+#  
+#}
+#
+#mapped <- mclapply(colnames(Culture_Map$sce_All[[1]]), Calc, cult = Culture_Map$sce_All[[1]], mc.cores = 6)
+#mapped <- do.call(rbind,mapped)
+#
+#saveRDS(mapped, paste0(path_data, 'mapped.rds'))
+```
+
+```{r}
+# v2 (with pseudotime)
+Calc<-function(id,cult){
+  u <- cult[,id]
+  lineage_pseudotime <- c('Myelocytes', 'cDC', 'Megakaryocte', 'Erythroid', 'B.cells')
+  pt_nn <- Healthy@meta.data[u,lineage_pseudotime]
+  pt = apply(pt_nn, 2, mean)
+  xcoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,1][u]
+  ycoords <- Healthy@reductions$MOFAUMAP@cell.embeddings[,2][u]
+  x=mean(xcoords)
+  y=mean(ycoords)
+  ct.t=table(Idents(Healthy)[u])
+  ct.t<- ct.t[order(ct.t,decreasing = T)]
+  nearest <- Healthy@assays$RNA@data[rownames(sce_Culture),u]
+  query <- normcounts(sce_Culture)[,id]
+  cornn<- apply(nearest,2,function(x) cor(x, query, method = 'pearson')) # pearson in original script
+  pt <- data.frame(row.names = id, x = x, y = y, ct = names(ct.t)[1], score = mean(cornn), pt = t(pt))
+  
+}
+
+mapped <- mclapply(colnames(Culture_Map$sce_All[[1]]), Calc, cult = Culture_Map$sce_All[[1]], mc.cores = 6)
+mapped <- do.call(rbind,mapped)
+```
+
+## Transfer labels to seurat object
+```{r project}
+Idents(merged) <- mapped$ct
+mapped$sample <- merged$sample
+identical(rownames(mapped), rownames(merged@meta.data)) #TRUE
+merged$lineage <- mapped$ct
+merged$lineage <- factor(merged$lineage, levels = levels(Healthy$ct))
+merged$lineage_similarity_score <- mapped$score
+merged$pt.Myelocytes <- mapped$pt.Myelocytes
+merged$pt.cDC <- mapped$pt.cDC
+merged$pt.Megakaryocte <- mapped$pt.Megakaryocte
+merged$pt.Erythroid <- mapped$pt.Erythroid
+merged$pt.B.cells <- mapped$pt.B.cells
+```
+
+```{r}
+bckgr <- data.frame(x = Embeddings(Healthy, reduction = "MOFAUMAP")[,1],
+                    y = Embeddings(Healthy, reduction = "MOFAUMAP")[,2])
+
+get_density <- function(x, y, ...) {
+  dens <- MASS::kde2d(x, y, ...)
+  ix <- findInterval(x, dens$x)
+  iy <- findInterval(y, dens$y)
+  ii <- cbind(ix, iy)
+  return(dens$z[ii])
+}
+
+mapped <- split(mapped, mapped$sample)
+mapped <- lapply(mapped, function(x) {
+  x$d <- get_density(x$x, x$y)
+  x$dnorm <- x$d / max(x$d)
+  x
+})
+mapped <- do.call(rbind, mapped)
+```
+
+```{r}
+dens_plot_list <- list()
+for (s in unique(mapped$sample)) {
+  sample_mapped <- mapped[which(mapped$sample == s),]
+  
+  p <- qplot(x = x, y = y, data = bckgr, color = I("#BBBBBB"), size=I(0.1)) + 
+    geom_point(aes(color = dnorm), data = sample_mapped, size=I(0.1)) + 
+    xlab("MOFAUMAP_1") + ylab("MOFAUMAP_2") +
+    scale_color_gradientn(colours = c("black","blue","red","orange")) +
+    ggtitle(s) +
+    theme_bw() + 
+    theme(panel.grid = element_blank()) 
+  
+  dens_plot_list[[s]] <- p
+}
+
+ggsave(filename = paste0(path_results, 'plots/mofaumap_density.png'),
+       device = "png",
+       plot = gridExtra::marrangeGrob(dens_plot_list, nrow = 3, ncol = 4, top = NULL),
+       width = 16, height = 10)
+```
+
+### Explore Pseudotime projection
+Reference trajectories have been calculated on MOFAUMAP embeddings by slingshot (see Triana et al).
+*Start = HSC
+*End = myelocytes, class switched memory B, late erythroid progenitors, megakaryocytes progenitors, conventional dendritic cells
+```{r}
+# plot reference trajectories
+lineage_pseudotime <- c('Myelocytes', 'cDC', 'Megakaryocte', 'Erythroid', 'B.cells')
+
+plot_list <- list()
+for (i in lineage_pseudotime) {
+  p <- FeaturePlot(Healthy, reduction = 'MOFAUMAP', 
+            features = i) +
+  theme_bw() +
+  scale_colour_viridis_c(name = 'Pseudotime', option = 'magma', direction = -1) +
+  theme(panel.grid = element_blank()) 
+  
+  plot_list[[i]] <- p
+}
+
+ggsave(filename = paste0(path_results, 'plots/mofaumap_pt_lineage.png'),
+       device = "png",
+       plot = gridExtra::marrangeGrob(plot_list, nrow = 1, ncol = 5, top = NULL, right = NULL),
+       width = 17, height = 2.5)
+```
+
+### Aggregate cell lineages
+```{r}
+## aggregation 1
+L <- list()
+for (i in names(aggregation1[1:length(aggregation1)])) {
+  x = data.frame(
+    barcode = colnames(merged)[which(merged$lineage %in% c(unlist(aggregation1[i], use.names = FALSE)))],
+    ct = merged$lineage[which(merged$lineage %in% c(unlist(aggregation1[i], use.names = FALSE)))],
+    aggregation1 = names(aggregation1[i])
+  )
+  L[[i]] <- x
+}
+df_ct <- do.call(rbind, L)
+
+df_ct <- df_ct[match(colnames(merged), df_ct$barcode),]
+
+merged$aggregated_lineage1 <- df_ct$aggregation1
+
+merged$aggregated_lineage1 <- factor(merged$aggregated_lineage1,
+                                     levels = names(aggregation1[1:length(aggregation1)]))
+
+## aggregation 2
+L <- list()
+for (i in names(aggregation2[1:length(aggregation2)])) {
+  x = data.frame(
+    barcode = colnames(merged)[which(merged$lineage %in% c(unlist(aggregation2[i], use.names = FALSE)))],
+    ct = merged$lineage[which(merged$lineage %in% c(unlist(aggregation2[i], use.names = FALSE)))],
+    aggregation2 = names(aggregation2[i])
+  )
+  L[[i]] <- x
+}
+df_ct <- do.call(rbind, L)
+
+df_ct <- df_ct[match(colnames(merged), df_ct$barcode),]
+
+merged$aggregated_lineage2 <- df_ct$aggregation2
+
+merged$aggregated_lineage2 <- factor(merged$aggregated_lineage2,
+                                     levels = names(aggregation2[1:length(aggregation2)]))
+```
+
+### Check scmap classification on query
+```{r}
+mat_1 <- data.frame(
+  cell = rownames(merged@meta.data),
+  lineage = merged@meta.data$lineage,
+  score = merged@meta.data$lineage_similarity_score
+)
+
+mat_2 <- mat_1 %>%
+  pivot_wider(names_from = cell, values_from = score, values_fill = 0) %>%
+  column_to_rownames(var = 'lineage') %>%
+  as.matrix()
+
+mat_1 <- mat_1 %>%
+  select(-score) %>%
+  column_to_rownames(var = 'cell')
+
+ta <- columnAnnotation(
+  Lineage = mat_1$lineage,
+  show_annotation_name = T,
+  show_legend = F,
+  col = list(Lineage = c(
+    "HSCs & MPPs" = "#73979DFF",                          
+    "Lymphomyeloid prog" = "#DADCD7FF",                     
+    "Erythro-myeloid progenitors" = "#43200EFF",             
+    "Early erythroid progenitor" = "#E16509FF",             
+    "Late erythroid progenitor" = "#747669FF",              
+    "Aberrant erythroid" = "#5495CFFF",            
+    "Megakaryocyte progenitors" = "#F5AF4DFF",              
+    "Eosinophil-basophil-mast cell progenitors" = "#DB4743FF",
+    "Early promyelocytes" = "#7C873EFF",                  
+    "Late promyelocytes" = "#FEF4D5FF",               
+    "Myelocytes" = "#6BBAE5FF",                                
+    "Plasmacytoid dendritic cell progenitors" = "#E3EEF4FF",
+    "Plasmacytoid dendritic cells" = "#454B68FF",             
+    "Conventional dendritic cell 1" = "#F9F5EAFF",
+    "Conventional dendritic cell 2" =  "#81974CFF",          
+    "Classical Monocytes" = "#553F31FF",                    
+    "Non-classical monocytes" = "#A8CDECFF",               
+    "Monocyte-like blasts" = "#F6955EFF",                  
+    "CD4+ naive T cells" = "#682C37FF",                     
+    "CD4+ memory T cells" = "#9B6981FF",                      
+    "CD69+PD-1+ memory CD4+ T cells" = "#7887A4FF",        
+    "CD4+ cytotoxic T cells" = "#A89F8EFF",                   
+    "CD8+ naive T cells" = "#D5AE63FF",                    
+    "CD8+ effector memory T cells" = "#6E6C81FF",        
+    "CD8+ central memory T cells" = "#F7ECD8FF",              
+    "CD8+CD103+ tissue resident memory T cells" = "#3F3939FF",
+    "GammaDelta T cells" = "#93AD90FF",                      
+    "NK cell progenitors" = "#C9B793FF",                   
+    "NK T cells" = "#7DCCD3FF",                              
+    "CD56brightCD16- NK cells" = "#4E7147FF",               
+    "CD56dimCD16+ NK cells" = "#BE9C9DFF",                   
+    "Pre-pro-B cells" = "#F7ECD8FF",                     
+    "Pro-B cells" =  "#376597FF",                              
+    "Small pre-B cell" = "#9888A5FF",             
+    "Pre-B cells" = "#DBA662FF",                              
+    "Immature B cells" = "#F4E7C5FF",                        
+    "Mature naive B cells" = "#678096FF",           
+    "Nonswitched memory B cells" = "#ACC2CFFF",             
+    "CD11c+ memory B cells" = "#979461FF",                   
+    "Class switched memory B cells" = "#CD5733FF" ,         
+    "Plasma cells" = "#A12A19FF",                            
+    "Mesenchymal cells_1" = "#8CBEB1FF",                     
+    "Mesenchymal cells_2" = "#FAFAF2FF" 
+  ))
+  )  
+```
+
+```{r}
+pdf(paste0(path_results, 'plots/heatmap_Triana_score.pdf'), width = 12, height = 9)
+
+Heatmap(mat_2, 
+        name = 'Pearson',
+        cluster_rows = T,
+        clustering_distance_rows = "euclidean",
+        clustering_method_rows = "complete",
+        row_dend_side = "right",
+        cluster_columns = T,
+        clustering_distance_columns = "euclidean",
+        clustering_method_columns = "complete",
+        col = viridisLite::mako(n = 100, direction = 1),
+        column_title = "scmap (Triana's reference)",
+        column_title_side = "top", 
+        column_title_gp = gpar(fontsize = 15),
+        row_names_gp = gpar(fontsize = 11),
+        row_names_side = "left",
+        show_column_names = F,
+        top_annotation = ta,
+        show_heatmap_legend = TRUE,
+        use_raster = T,
+        raster_by_magick = T,
+        heatmap_width = unit(19, "cm"), 
+        heatmap_height = unit(15, "cm")
+)
+        
+dev.off()
+```
+
+We prioritize lineage assignment by scmap as compared to other methods because we are interested in:
+* relying on both RNA and protein data (more robust than RNA alone)
+* transferring pseudotime projection based on hBM reference
+
+However, we test a couple of additional approaches in order to validate assignment according to scmap.
+
+## Approach 2: SingleR using Triana's reference
+```{r}
+sce <- as.SingleCellExperiment(merged)
+ref <- as.SingleCellExperiment(Healthy)
+
+test <- SingleR(test = sce, ref = ref, labels = as.character(ref$ct), de.method = "wilcox")
+saveRDS(test, paste0(path_data, "singleR.rds"))
+```
+
+```{r}
+plotScoreHeatmap(test, 
+                 max.labels = length(unique(test$labels)),
+                 filename = paste0(path_results, "plots/singleR.png"),
+                 width = 15, height = 10
+                 )
+```
+
+```{r}
+# transfer both label and score
+x <- data.frame(
+  cell = rownames(test),
+  singleR_label = test$labels 
+)
+x <- cbind(x, test$scores)
+
+L <- list()
+for (i in row(x)) {
+  label = x[i,"singleR_label"]
+  score = x[i,label]
+  L[[i]] <- score
+}
+
+x$singleR_score <- do.call(rbind, L)
+```
+
+```{r}
+merged$singleR_label <- x$singleR_label
+merged$singleR_score <- x$singleR_score
+saveRDS(merged, paste0(path_data, 'merged_mapped_log.rds')) 
+```
+
+## Compare scmap and singleR
+```{r}
+# check scores
+x = cor.test(merged$lineage_similarity_score, merged$singleR_score, method = "spearman")
+
+ggplot(merged@meta.data,
+       aes(x = lineage_similarity_score, y = singleR_score)) +
+  geom_point(size = 0.1, alpha = 0.5) + 
+  geom_smooth(method = "lm", se = T) +
+  #xlim(0,1) + ylim(0,1) +
+  theme_bw() +
+  xlab("scmap score") + ylab("singleR score") +
+  labs(subtitle = paste0("Spearman rho = ", round(x$estimate, digits = 2), "; p = ", round(x$p.value, digits = 2))) +
+  theme(panel.grid = element_blank(),
+        aspect.ratio = 1)
+
+ggsave(paste0(path_results, "plots/scmap_singler_score_cor.png"), width = 5, height = 5)
+```
+
+```{r}
+df_lin <- data.frame(
+  scmap = merged$lineage,
+  singleR = merged$singleR_label,
+  aggregated_lineage1 = merged$aggregated_lineage1,
+  aggregated_lineage2 = merged$aggregated_lineage2
+)
+```
+
+```{r}
+L <- list()
+for (i in names(aggregation1[1:length(aggregation1)])) {
+  x = data.frame(
+    barcode = rownames(df_lin)[which(df_lin$singleR %in% c(unlist(aggregation1[i], use.names = FALSE)))],
+    ct = df_lin$singleR[which(df_lin$singleR %in% c(unlist(aggregation1[i], use.names = FALSE)))],
+    aggregation1 = names(aggregation1[i])
+  )
+  L[[i]] <- x
+}
+df_ct <- do.call(rbind, L)
+
+df_ct <- df_ct[match(rownames(df_lin), df_ct$barcode),]
+
+df_lin$aggregated_lineage_singler1 <- df_ct$aggregation1
+
+df_lin$aggregated_lineage_singler1 <- factor(df_lin$aggregated_lineage_singler1,
+                                     levels = names(aggregation1[1:length(aggregation1)]))
+
+L <- list()
+for (i in names(aggregation2[1:length(aggregation2)])) {
+  x = data.frame(
+    barcode = rownames(df_lin)[which(df_lin$singleR %in% c(unlist(aggregation2[i], use.names = FALSE)))],
+    ct = df_lin$singleR[which(df_lin$singleR %in% c(unlist(aggregation2[i], use.names = FALSE)))],
+    aggregation2 = names(aggregation2[i])
+  )
+  L[[i]] <- x
+}
+df_ct <- do.call(rbind, L)
+
+df_ct <- df_ct[match(rownames(df_lin), df_ct$barcode),]
+
+df_lin$aggregated_lineage_singler2 <- df_ct$aggregation2
+
+df_lin$aggregated_lineage_singler2 <- factor(df_lin$aggregated_lineage_singler2,
+                                     levels = names(aggregation2[1:length(aggregation2)]))
+
+df_lin$scmap <- factor(df_lin$scmap, levels = levels(merged$lineage))
+df_lin$singleR <- factor(df_lin$singleR, levels = levels(merged$lineage))
+df_lin$aggregated_lineage1 <- factor(df_lin$aggregated_lineage1, levels = levels(merged$aggregated_lineage1))
+df_lin$aggregated_lineage2 <- factor(df_lin$aggregated_lineage2, levels = levels(merged$aggregated_lineage2))
+```
+
+```{r}
+# confusion matrix
+scmap <- merged$lineage
+singleR <- merged$singleR_label
+ari <- aricode::ARI(df_lin$scmap, df_lin$singleR) #0.5817043
+
+conf_mat <- gmodels::CrossTable(scmap, singleR, dnn = c('scmap', 'singleR'), chisq = T)
+conf_mat$prop.tbl <- conf_mat$prop.tbl[,match(rownames(conf_mat$prop.tbl), colnames(conf_mat$prop.tbl))]
+
+pdf(paste0(path_results, 'plots/singler_scmap_confusion_matrix.pdf'))
+
+Heatmap(
+  conf_mat$prop.tbl, 
+  name = 'Fraction',
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_dend = F,
+  show_column_dend = F,
+  show_row_names = T,
+  show_column_names = T,
+  row_title = 'scmap',
+  row_title_side = "left",
+  row_title_gp = gpar(fontsize = 13.2),
+  row_names_side = "right",
+  column_title = 'singleR',
+  column_title_gp = gpar(fontsize = 13.2),
+  column_title_rot = 0,
+  col = viridisLite::mako(n = 100, direction = -1),
+  rect_gp = gpar(col = "white", lwd = 0.5),
+  row_names_gp = gpar(fontsize = 8),
+  column_names_gp = gpar(fontsize = 8),
+  width = unit(9, "cm"), height = unit(9, "cm")
+)
+
+dev.off()
+```
+
+```{r}
+# aggregated lineage1
+scmap <- df_lin$aggregated_lineage1
+singleR <- df_lin$aggregated_lineage_singler1
+ari <- aricode::ARI(scmap, singleR) #0.7649224
+
+conf_mat <- gmodels::CrossTable(scmap, singleR, dnn = c('scmap', 'singleR'), chisq = T)
+conf_mat$prop.tbl <- conf_mat$prop.tbl[,match(rownames(conf_mat$prop.tbl), colnames(conf_mat$prop.tbl))]
+
+pdf(paste0(path_results, 'plots/singler_scmap_aggr1_confusion_matrix.pdf'))
+
+Heatmap(
+  conf_mat$prop.tbl, 
+  name = 'Fraction',
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_dend = F,
+  show_column_dend = F,
+  show_row_names = T,
+  show_column_names = T,
+  row_title = 'scmap',
+  row_title_side = "left",
+  row_title_gp = gpar(fontsize = 13.2),
+  row_names_side = "right",
+  column_title = 'singleR',
+  column_title_gp = gpar(fontsize = 13.2),
+  column_title_rot = 0,
+  col = viridisLite::mako(n = 100, direction = -1),
+  rect_gp = gpar(col = "white", lwd = 0.5),
+  row_names_gp = gpar(fontsize = 10),
+  column_names_gp = gpar(fontsize = 10),
+  width = unit(8, "cm"), height = unit(8, "cm")
+)
+
+dev.off()
+```
+
+```{r}
+# aggregated lineage2
+scmap <- df_lin$aggregated_lineage2
+singleR <- df_lin$aggregated_lineage_singler2
+ari <- aricode::ARI(scmap, singleR) #0.736539
+
+conf_mat <- gmodels::CrossTable(scmap, singleR, dnn = c('scmap', 'singleR'), chisq = T)
+conf_mat$prop.tbl <- conf_mat$prop.tbl[,match(rownames(conf_mat$prop.tbl), colnames(conf_mat$prop.tbl))]
+
+pdf(paste0(path_results, 'plots/singler_scmap_aggr2_confusion_matrix.pdf'))
+
+Heatmap(
+  conf_mat$prop.tbl, 
+  name = 'Fraction',
+  cluster_rows = F,
+  cluster_columns = F,
+  show_row_dend = F,
+  show_column_dend = F,
+  show_row_names = T,
+  show_column_names = T,
+  row_title = 'scmap',
+  row_title_side = "left",
+  row_title_gp = gpar(fontsize = 13.2),
+  row_names_side = "right",
+  column_title = 'singleR',
+  column_title_gp = gpar(fontsize = 13.2),
+  column_title_rot = 0,
+  col = viridisLite::mako(n = 100, direction = -1),
+  rect_gp = gpar(col = "white", lwd = 0.5),
+  row_names_gp = gpar(fontsize = 10),
+  column_names_gp = gpar(fontsize = 10),
+  width = unit(8, "cm"), height = unit(8, "cm")
+)
+
+dev.off()
+```
+
+## Approach 3: Hay's signatures
+
+### Create list of Hay's signatures
+```{r}
+x <- msigdbr(species = 'Homo sapiens', category = 'C8') 
+names_ <- unique(x$gs_name)
+names_sign <- names_[which(grepl('HAY', names_) == TRUE)]
+x <- x %>% filter(gs_name %in% names_sign)
+
+hay_marker_matrix <- x %>% select(gs_name, gene_symbol) %>%
+  pivot_wider(names_from = 'gs_name', values_from = 'gs_name')
+hay_marker_matrix <- hay_marker_matrix %>% column_to_rownames(var = 'gene_symbol')
+hay_marker_matrix[!is.na(hay_marker_matrix)] <- 1
+hay_marker_matrix[is.na(hay_marker_matrix)] <- 0
+
+hay_marker_matrix <- hay_marker_matrix[intersect(rownames(hay_marker_matrix), 
+                                                 rownames(merged@assays$RNA@data)),]
+
+hay_marker_list <- apply(hay_marker_matrix==1, 2, which)
+hay_marker_list <- lapply(hay_marker_list, names)
+```
+
+### Expression modules by signatures
+```{r}
+# by seurat 
+merged <- AddModuleScore(
+  object = merged, features = hay_marker_list,
+  pool = NULL, nbin = 24, ctrl = 100,
+  assay = 'RNA', name = 'hay_marker_list',
+  seed = 123, search = TRUE
+)
+
+colnames(merged@meta.data)[grep('hay', colnames(merged@meta.data))] <- paste0(names(hay_marker_list), "_Seurat")
+
+# by UCell
+merged <- AddModuleScore_UCell(
+  obj = merged,
+  features = hay_marker_list
+)
+
+saveRDS(merged, paste0(path_data, 'merged_mapped_log.rds')) 
+```
+
+## Compare classification across approaches
+```{r}
+UCell_names <- paste0(names(hay_marker_list), "_UCell")
+
+for (i in UCell_names) {
+  p = VlnPlot(merged, 
+        features = i, 
+        group.by = "lineage",
+        cols = colors$lineage,
+        pt.size = 0,
+        add.noise = F) +
+    theme_bw() +
+    ggtitle(i) +
+    ylab("UCell score") +
+    coord_flip() +
+    scale_x_discrete(limits=rev) +
+    theme(panel.grid = element_blank(),
+        legend.position = 'none',
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.text = element_text(color = 'black'),
+        plot.title = element_text(face = 'bold', hjust = 0.5)) 
+  
+  ggsave(paste0(path_results, 'plots/vln_Triana_Hay_', i, '.png'), p,
+       width = 8, height = 6)
+}
+```
+
+```{r}
+# Hay against scmap
+#mat_1 <- t(final_seurat@meta.data[,grep('HAY', colnames(final_seurat@meta.data))])
+
+mat_1 <- t(merged@meta.data[,UCell_names])
+
+mat_2 <- merged@meta.data %>%
+  select(lineage)
+
+ta <- columnAnnotation(
+  Lineage = mat_2$lineage,
+  show_annotation_name = F,
+  show_legend = T,
+  col = list(Lineage = c(
+    "HSCs & MPPs" = "#73979DFF",                          
+    "Lymphomyeloid prog" = "#DADCD7FF",                     
+    "Erythro-myeloid progenitors" = "#43200EFF",             
+    "Early erythroid progenitor" = "#E16509FF",             
+    "Late erythroid progenitor" = "#747669FF",              
+    "Aberrant erythroid" = "#5495CFFF",            
+    "Megakaryocyte progenitors" = "#F5AF4DFF",              
+    "Eosinophil-basophil-mast cell progenitors" = "#DB4743FF",
+    "Early promyelocytes" = "#7C873EFF",                  
+    "Late promyelocytes" = "#FEF4D5FF",               
+    "Myelocytes" = "#6BBAE5FF",                                
+    "Plasmacytoid dendritic cell progenitors" = "#E3EEF4FF",
+    "Plasmacytoid dendritic cells" = "#454B68FF",             
+    "Conventional dendritic cell 1" = "#F9F5EAFF",
+    "Conventional dendritic cell 2" =  "#81974CFF",          
+    "Classical Monocytes" = "#553F31FF",                    
+    "Non-classical monocytes" = "#A8CDECFF",               
+    "Monocyte-like blasts" = "#F6955EFF",                  
+    "CD4+ naive T cells" = "#682C37FF",                     
+    "CD4+ memory T cells" = "#9B6981FF",                      
+    "CD69+PD-1+ memory CD4+ T cells" = "#7887A4FF",        
+    "CD4+ cytotoxic T cells" = "#A89F8EFF",                   
+    "CD8+ naive T cells" = "#D5AE63FF",                    
+    "CD8+ effector memory T cells" = "#6E6C81FF",        
+    "CD8+ central memory T cells" = "#F7ECD8FF",              
+    "CD8+CD103+ tissue resident memory T cells" = "#3F3939FF",
+    "GammaDelta T cells" = "#93AD90FF",                      
+    "NK cell progenitors" = "#C9B793FF",                   
+    "NK T cells" = "#7DCCD3FF",                              
+    "CD56brightCD16- NK cells" = "#4E7147FF",               
+    "CD56dimCD16+ NK cells" = "#BE9C9DFF",                   
+    "Pre-pro-B cells" = "#F7ECD8FF",                     
+    "Pro-B cells" =  "#376597FF",                              
+    "Small pre-B cell" = "#9888A5FF",             
+    "Pre-B cells" = "#DBA662FF",                              
+    "Immature B cells" = "#F4E7C5FF",                        
+    "Mature naive B cells" = "#678096FF",           
+    "Nonswitched memory B cells" = "#ACC2CFFF",             
+    "CD11c+ memory B cells" = "#979461FF",                   
+    "Class switched memory B cells" = "#CD5733FF" ,         
+    "Plasma cells" = "#A12A19FF",                            
+    "Mesenchymal cells_1" = "#8CBEB1FF",                     
+    "Mesenchymal cells_2" = "#FAFAF2FF" 
+  ))
+  )  
+```
+
+```{r}
+pdf(paste0(path_results, 'plots/heatmap_scmap_Hay_UCell.pdf'), width = 15, height = 9)
+
+Heatmap(mat_1, 
+        name = 'UCell score',
+        cluster_rows = F,
+        cluster_columns = T,
+        clustering_distance_columns = "euclidean",
+        clustering_method_columns = "complete",
+        col = viridisLite::mako(n = 100, direction = 1),
+        column_title = "scmap",
+        column_title_side = "top", 
+        column_title_gp = gpar(fontsize = 15),
+        row_names_gp = gpar(fontsize = 11),
+        row_names_side = "left",
+        show_column_names = F,
+        top_annotation = ta,
+        show_heatmap_legend = TRUE,
+        use_raster = T,
+        raster_by_magick = T,
+        heatmap_width = unit(19, "cm"), 
+        heatmap_height = unit(15, "cm")
+)
+        
+dev.off()
+```
+
+```{r}
+# Hay against singleR
+#mat_1 <- t(final_seurat@meta.data[,grep('HAY', colnames(final_seurat@meta.data))])
+
+mat_1 <- t(merged@meta.data[,UCell_names])
+
+mat_2 <- merged@meta.data %>%
+  select(singleR_label)
+
+ta <- columnAnnotation(
+  Lineage = mat_2$singleR_label,
+  show_annotation_name = F,
+  show_legend = T,
+  col = list(Lineage = c(
+    "HSCs & MPPs" = "#73979DFF",                          
+    "Lymphomyeloid prog" = "#DADCD7FF",                     
+    "Erythro-myeloid progenitors" = "#43200EFF",             
+    "Early erythroid progenitor" = "#E16509FF",             
+    "Late erythroid progenitor" = "#747669FF",              
+    "Aberrant erythroid" = "#5495CFFF",            
+    "Megakaryocyte progenitors" = "#F5AF4DFF",              
+    "Eosinophil-basophil-mast cell progenitors" = "#DB4743FF",
+    "Early promyelocytes" = "#7C873EFF",                  
+    "Late promyelocytes" = "#FEF4D5FF",               
+    "Myelocytes" = "#6BBAE5FF",                                
+    "Plasmacytoid dendritic cell progenitors" = "#E3EEF4FF",
+    "Plasmacytoid dendritic cells" = "#454B68FF",             
+    "Conventional dendritic cell 1" = "#F9F5EAFF",
+    "Conventional dendritic cell 2" =  "#81974CFF",          
+    "Classical Monocytes" = "#553F31FF",                    
+    "Non-classical monocytes" = "#A8CDECFF",               
+    "Monocyte-like blasts" = "#F6955EFF",                  
+    "CD4+ naive T cells" = "#682C37FF",                     
+    "CD4+ memory T cells" = "#9B6981FF",                      
+    "CD69+PD-1+ memory CD4+ T cells" = "#7887A4FF",        
+    "CD4+ cytotoxic T cells" = "#A89F8EFF",                   
+    "CD8+ naive T cells" = "#D5AE63FF",                    
+    "CD8+ effector memory T cells" = "#6E6C81FF",        
+    "CD8+ central memory T cells" = "#F7ECD8FF",              
+    "CD8+CD103+ tissue resident memory T cells" = "#3F3939FF",
+    "GammaDelta T cells" = "#93AD90FF",                      
+    "NK cell progenitors" = "#C9B793FF",                   
+    "NK T cells" = "#7DCCD3FF",                              
+    "CD56brightCD16- NK cells" = "#4E7147FF",               
+    "CD56dimCD16+ NK cells" = "#BE9C9DFF",                   
+    "Pre-pro-B cells" = "#F7ECD8FF",                     
+    "Pro-B cells" =  "#376597FF",                              
+    "Small pre-B cell" = "#9888A5FF",             
+    "Pre-B cells" = "#DBA662FF",                              
+    "Immature B cells" = "#F4E7C5FF",                        
+    "Mature naive B cells" = "#678096FF",           
+    "Nonswitched memory B cells" = "#ACC2CFFF",             
+    "CD11c+ memory B cells" = "#979461FF",                   
+    "Class switched memory B cells" = "#CD5733FF" ,         
+    "Plasma cells" = "#A12A19FF",                            
+    "Mesenchymal cells_1" = "#8CBEB1FF",                     
+    "Mesenchymal cells_2" = "#FAFAF2FF" 
+  ))
+  )  
+```
+
+```{r}
+pdf(paste0(path_results, 'plots/heatmap_singler_Hay_UCell.pdf'), width = 15, height = 9)
+
+Heatmap(mat_1, 
+        name = 'UCell score',
+        cluster_rows = F,
+        cluster_columns = T,
+        clustering_distance_columns = "euclidean",
+        clustering_method_columns = "complete",
+        col = viridisLite::mako(n = 100, direction = 1),
+        column_title = "SingleR",
+        column_title_side = "top", 
+        column_title_gp = gpar(fontsize = 15),
+        row_names_gp = gpar(fontsize = 11),
+        row_names_side = "left",
+        show_column_names = F,
+        top_annotation = ta,
+        show_heatmap_legend = TRUE,
+        use_raster = T,
+        raster_by_magick = T,
+        heatmap_width = unit(19, "cm"), 
+        heatmap_height = unit(15, "cm")
+)
+        
+dev.off()
+```
+
+## Session info
+```{r}
+sessionInfo()
+```
