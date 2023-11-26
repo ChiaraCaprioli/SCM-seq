@@ -1,2 +1,0 @@
-Source activate cpat
-gffcompare -M -D -d 20 -s /hpcnfs/scratch/PGP/niman/Chiara/FLAMES/h38_cagepeak/GRCh38.primary_assembly.genome.fa -r /hpcnfs/scratch/PGP/niman/Chiara/FLAMES/h38_cagepeak/gencode.v27.annotation.gtf -o gffcomare -i assembly_GTF_list.txt
